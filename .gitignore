@@ -1,0 +1,22 @@
+# Never commit footage, weights, datasets or secrets.
+*.mp4
+*.mkv
+*.h264
+*.h265
+*.onnx
+*.engine
+*.pt
+*.pth
+*.safetensors
+data/
+datasets/
+.env
+*.key
+node_modules/
+
+# Personal Claude Code settings
+.claude/settings.local.json
+.tools/
+.venv/
+__pycache__/
+.pytest_cache/
