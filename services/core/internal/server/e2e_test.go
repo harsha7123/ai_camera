@@ -182,7 +182,7 @@ func TestEndToEnd(t *testing.T) {
 // tokenRejected: the contract says 403 for a bad or expired clip token; the
 // server currently answers 401. Either refuses playback.
 func tokenRejected(code int) bool {
-	return code == http.StatusForbidden || code == http.StatusUnauthorized
+	return code == http.StatusForbidden
 }
 
 func filepathGlob(dir string) ([]string, error) { return filepath.Glob(filepath.Join(dir, "*")) }

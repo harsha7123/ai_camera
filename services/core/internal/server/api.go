@@ -761,13 +761,13 @@ func (s *Server) clipMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if !valid {
-		writeErr(w, http.StatusUnauthorized, "clip link is invalid or has expired")
+		writeErr(w, http.StatusForbidden, "clip link is invalid or has expired")
 		return
 	}
 	// The token is bound to its user: a disabled account loses access at once.
 	user, err := s.DB.UserByName(r.Context(), t.user)
 	if err != nil || user.ID != t.userID || user.Disabled || !auth.Can(user.Role, auth.PermViewClips) {
-		writeErr(w, http.StatusUnauthorized, "clip link is no longer valid")
+		writeErr(w, http.StatusForbidden, "clip link is no longer valid")
 		return
 	}
 	clip, err := s.DB.Clip(r.Context(), id)

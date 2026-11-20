@@ -3,6 +3,7 @@ package evidence
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,5 +101,27 @@ func TestOpenRejectsWrongIDTamperingAndShred(t *testing.T) {
 func TestNewVaultRejectsShortKey(t *testing.T) {
 	if _, err := NewVault(t.TempDir(), make([]byte, 16)); err == nil {
 		t.Fatal("16-byte master key must be refused")
+	}
+}
+
+// A clip is never overwritten: storing under an existing clip id fails with
+// ErrExists and leaves the original (whose key is already in the database)
+// readable.
+func TestStoreRefusesExistingClip(t *testing.T) {
+	v := newVault(t)
+	first, err := v.Store("INC-1-cam-counter", writePlain(t, []byte("original evidence")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := writePlain(t, []byte("replacement"))
+	if _, err := v.Store("INC-1-cam-counter", src); !errors.Is(err, ErrExists) {
+		t.Fatalf("second store: %v, want ErrExists", err)
+	}
+	got, err := v.Open("INC-1-cam-counter", first.Path, first.WrappedKey, first.SHA256)
+	if err != nil || string(got) != "original evidence" {
+		t.Fatalf("original clip after refused overwrite: %q %v", got, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(v.Dir, "*.part")); len(left) != 0 {
+		t.Fatalf("temporary files left behind: %v", left)
 	}
 }

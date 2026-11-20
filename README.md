@@ -49,6 +49,16 @@ Everything else in the playbook (fire/smoke, weapons, PPE, hand-washing, dine-an
 | GPU inference benchmark | Run on an RTX PRO 4500 Blackwell with synthetic inputs, speed only ([BENCHMARK_RESULTS](docs/BENCHMARK_RESULTS.md)) |
 | POS connectors (Toast, Square, Clover…), time clock, mobile push/SMS, MFA, multi-site cloud dashboard | **Not implemented**: the POS ingest API exists, vendor adapters do not |
 
+**Test results (2026-11-20):**
+
+| Suite | Result |
+|---|---|
+| Go core (`go test -race`, against Postgres 16) | 77 passed, 0 skipped |
+| Vision worker | 63 passed; 9 skipped (live MediaMTX and model smoke tests need local binaries and weights) |
+| Eval harness | 57 passed |
+| Soak tool | 7 passed |
+| Dashboard | `tsc`, `eslint` and `next build` clean; 35/35 Playwright e2e passed |
+
 ## Architecture in one paragraph
 Edge-first ([ADR-001](docs/architecture/adr/ADR-001-edge-first-hybrid.md)): one appliance per restaurant runs four parts, and video never leaves the site.
 - **`vision-worker`** (Python): RTSP → decode → person detection → tracking → anonymous *observations*.

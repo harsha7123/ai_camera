@@ -21,9 +21,9 @@ import (
 func alertedIncident(t *testing.T, db *store.DB, key string) store.IncidentView {
 	t.Helper()
 	now := time.Now().UTC()
-	_, _, err := db.InsertIfAbsent(&eventengine.Incident{ID: "INC-" + key, IdempotencyKey: key, RoomID: "infants-a",
-		RoomZone: "changing-table-1", EventType: "infant_off_surface", Family: "A", Start: now, End: now,
-		Cameras: []string{"cam1"}, Status: eventengine.StatusAlerted, RuleVersion: "a1-v0.1", Source: "MOCK"})
+	_, _, err := db.InsertIfAbsent(&eventengine.Incident{ID: "INC-" + key, IdempotencyKey: key, RoomID: "counter",
+		RoomZone: "counter-queue", EventType: "long_queue", Family: "A", Start: now, End: now,
+		Cameras: []string{"cam-counter"}, Status: eventengine.StatusAlerted, RuleVersion: "a4q-v0.1", Source: "MOCK"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,9 @@ func TestWebhookRetriesThenFails(t *testing.T) {
 		if strings.Contains(string(body), "clip") || strings.Contains(string(body), "http") {
 			t.Errorf("webhook payload must not carry media links: %s", body)
 		}
+		if !strings.Contains(string(body), "long queue") {
+			t.Errorf("webhook message should name the event type: %s", body)
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer hook.Close()
@@ -69,7 +72,7 @@ func TestWebhookRetriesThenFails(t *testing.T) {
 	h := hub.New()
 	sub := h.Subscribe(false)
 	d := &alerts.Dispatcher{DB: db, Hub: h, Client: hook.Client(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Cfg: alerts.Config{WebhookURL: hook.URL, Interval: 20 * time.Millisecond, RetryBase: 10 * time.Millisecond, MaxAttempts: 3}}
+		Cfg: alerts.Config{WebhookURL: hook.URL + "/relay?token=" + secretToken, Interval: 20 * time.Millisecond, RetryBase: 10 * time.Millisecond, MaxAttempts: 3}}
 	inc := alertedIncident(t, db, "w1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -84,7 +87,7 @@ func TestWebhookRetriesThenFails(t *testing.T) {
 	go d.Run(ctx)
 
 	msg := next(t, sub, "alert_delivery_failed", 5*time.Second)
-	if !strings.Contains(msg, `"incident_id":"INC-w1"`) || !strings.Contains(msg, `"channel":"webhook"`) {
+	if !strings.Contains(msg, `"incident_id":"INC-w1"`) || !strings.Contains(msg, `"channel":"webhook"`) || !strings.Contains(msg, `"error":"HTTP 500"`) {
 		t.Fatalf("unexpected event %q", msg)
 	}
 	if n := calls.Load(); n != 3 {
@@ -100,13 +103,73 @@ func TestWebhookRetriesThenFails(t *testing.T) {
 			webhook = a
 		}
 	}
-	if webhook.State != "failed" || webhook.Attempts != 3 || !strings.Contains(webhook.LastError, "500") {
+	if webhook.State != "failed" || webhook.Attempts != 3 || webhook.LastError != "HTTP 500" {
 		t.Fatalf("webhook alert = %+v", webhook)
 	}
+	assertNoWebhookURL(t, db, hook.URL, msg, webhook.LastError)
 	failed, _, err := db.AlertHealth(ctx, 10*time.Second)
 	if err != nil || failed != 1 {
 		t.Fatalf("alert health failed=%d err=%v", failed, err)
 	}
+}
+
+// secretToken stands in for a credential embedded in a webhook URL (many
+// SMS/push relays authenticate this way).
+const secretToken = "s3cr3t-relay-token"
+
+// assertNoWebhookURL checks that neither the URL nor its token leaked into
+// the stored error, the published event or the audit log.
+func assertNoWebhookURL(t *testing.T, db *store.DB, base string, texts ...string) {
+	t.Helper()
+	entries, err := db.AuditEntries(context.Background(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range entries {
+		texts = append(texts, string(en.Payload), en.Subject)
+	}
+	host := strings.TrimPrefix(base, "http://")
+	for _, s := range texts {
+		if strings.Contains(s, secretToken) || strings.Contains(s, host) || strings.Contains(s, "relay?") {
+			t.Fatalf("webhook URL leaked: %q", s)
+		}
+	}
+}
+
+func TestUnreachableWebhookErrorHidesURL(t *testing.T) {
+	db, _ := pgtest.New(t)
+	// A listener that is closed at once: connections are refused.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+
+	h := hub.New()
+	sub := h.Subscribe(false)
+	d := &alerts.Dispatcher{DB: db, Hub: h, Client: &http.Client{Timeout: time.Second}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Cfg: alerts.Config{WebhookURL: deadURL + "/relay?token=" + secretToken, Interval: 20 * time.Millisecond, RetryBase: 10 * time.Millisecond, MaxAttempts: 2}}
+	inc := alertedIncident(t, db, "u1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := d.Raise(ctx, inc, 0); err != nil {
+		t.Fatal(err)
+	}
+	go d.Run(ctx)
+	msg := next(t, sub, "alert_delivery_failed", 5*time.Second)
+	if !strings.Contains(msg, `"error":"connection failed"`) {
+		t.Fatalf("event should carry a short error class: %q", msg)
+	}
+	list, err := db.AlertsFor(ctx, "INC-u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lastErrs []string
+	for _, a := range list {
+		lastErrs = append(lastErrs, a.LastError)
+		if a.Channel == alerts.ChannelWebhook && (a.State != "failed" || a.LastError != "connection failed") {
+			t.Fatalf("webhook alert = %+v", a)
+		}
+	}
+	assertNoWebhookURL(t, db, deadURL, append(lastErrs, msg)...)
 }
 
 func TestEscalatesUnacknowledged(t *testing.T) {
