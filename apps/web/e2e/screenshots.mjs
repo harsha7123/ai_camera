@@ -19,11 +19,11 @@ const VIEWPORTS = {
 
 const shots = [
   { name: "login", role: null, go: "/login/" },
-  { name: "overview-degraded", role: "caregiver", go: "/", wait: "room-tile" },
-  { name: "overview-all-ok", role: "caregiver", go: "/", wait: "room-tile", scenario: "all_ok" },
+  { name: "overview-degraded", role: "staff", go: "/", wait: "room-tile" },
+  { name: "overview-all-ok", role: "staff", go: "/", wait: "room-tile", scenario: "all_ok" },
   {
     name: "overview-disconnected",
-    role: "caregiver",
+    role: "staff",
     go: "/",
     wait: "room-tile",
     scenario: "all_ok",
@@ -32,10 +32,10 @@ const shots = [
       await page.locator('[data-testid="live-indicator"][data-status="down"]').waitFor();
     },
   },
-  { name: "incidents-inbox", role: "reviewer", go: "/incidents/", wait: "incident-row" },
+  { name: "incidents-inbox", role: "owner", go: "/incidents/", wait: "incident-row" },
   {
     name: "incident-detail",
-    role: "reviewer",
+    role: "owner",
     go: "/incidents/?id=INC-7f3a9c21b001",
     wait: "incident-detail",
     after: async (page) => {
@@ -44,17 +44,20 @@ const shots = [
       await page.waitForTimeout(600);
     },
   },
-  { name: "incident-resolved", role: "reviewer", go: "/incidents/?id=INC-4d2f11e9b004", wait: "incident-detail" },
+  { name: "incident-resolved", role: "owner", go: "/incidents/?id=INC-4d2f11e9b004", wait: "incident-detail" },
   {
     name: "alert-toast",
-    role: "caregiver",
+    role: "staff",
     go: "/",
     wait: "room-tile",
     after: async (page) => {
-      await mock.control("incident", { room_id: "toddlers-b", room_zone: "stairs-gate" });
+      await mock.control("incident", { room_id: "back", room_zone: "back-door", event_type: "after_hours_intrusion", cameras: ["cam-back"] });
       await page.getByTestId("toast").first().waitFor();
     },
   },
+  { name: "incidents-shadow", role: "owner", go: "/incidents/?id=INC-c05e7a8fd005", wait: "incident-detail" },
+  { name: "traffic", role: "manager", go: "/traffic/", wait: "heatmap" },
+  { name: "access-log", role: "manager", go: "/access-log/", wait: "access-row" },
   { name: "cameras", role: "admin", go: "/cameras/", wait: "camera-row" },
   { name: "users", role: "admin", go: "/users/", wait: "user-row" },
   { name: "audit-ok", role: "admin", go: "/audit/", wait: "audit-row" },

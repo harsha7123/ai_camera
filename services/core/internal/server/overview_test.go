@@ -41,35 +41,39 @@ func camStateOf(o overviewResp, id string) string {
 // and analysed, and the engine itself is alive.
 func TestOverviewStates(t *testing.T) {
 	e := newEnv(t, envOpts{cfg: Config{TickEvery: 50 * time.Millisecond}})
-	care := e.client("caregiver")
+	stf := e.client("staff")
 
-	o := getOverview(t, e, care)
+	o := getOverview(t, e, stf)
 	if o.State == "FULLY_OPERATIONAL" {
 		t.Fatal("green before any observation")
 	}
 	eventually(t, 2*time.Second, "first tick", func() bool {
-		o := getOverview(t, e, care)
-		return o.Services["engine"] == "ok" && camStateOf(o, "cam1") == "NOT_CONNECTED"
+		o := getOverview(t, e, stf)
+		return o.Services["engine"] == "ok" && camStateOf(o, "cam-counter") == "NOT_CONNECTED"
 	})
-	o = getOverview(t, e, care)
-	if o.Facility.Name != "Sunflower Nursery" || o.State != "NOT_CONNECTED" || roomState(o, "toddlers") != "NOT_CONNECTED" ||
+	o = getOverview(t, e, stf)
+	if o.Facility.Name != "Harbor Grill" || o.Facility.ID != "harbor-grill" || o.State != "NOT_CONNECTED" || roomState(o, "back") != "NOT_CONNECTED" ||
+		!o.Business.Open || o.Business.Timezone != "UTC" ||
 		o.Services["engine"] != "ok" || o.Services["database"] != "ok" || o.Services["evidence"] != "ok" {
 		t.Fatalf("initial overview %+v", o)
 	}
-	if len(o.Rooms) != 2 || len(o.Rooms[1].Cameras) != 0 { // a room with no cameras still appears, not monitored
+	if len(o.Rooms) != 4 || roomCams(o, "back") != 0 { // a room with no cameras still appears, not monitored
 		t.Fatalf("rooms %+v", o.Rooms)
+	}
+	if !camPriority(o, "cam-counter") || camPriority(o, "cam-dining") {
+		t.Fatalf("priority flags %+v", o.Rooms)
 	}
 
 	// Give the empty room a camera so the facility can become operational.
-	cam3 := `{"id":"cam3","room_id":"toddlers","name":"Nap room","authorized_by":"Director","authorized_at":"2026-10-02","authorization_scope":"Nap room"}`
-	if st, b := e.do(e.client("admin"), "POST", "/api/v1/cameras", cam3); st != http.StatusCreated {
-		t.Fatalf("create cam3: %d %s", st, b)
+	camBack := `{"id":"cam-back","room_id":"back","name":"Back door","staff_only":true,"authorized_by":"Owner","authorized_at":"2026-10-02","authorization_scope":"Back door and dock"}`
+	if st, b := e.do(e.client("admin"), "POST", "/api/v1/cameras", camBack); st != http.StatusCreated {
+		t.Fatalf("create cam-back: %d %s", st, b)
 	}
 
-	// Feed every camera at 5 Hz; cam2's condition is switchable.
+	// Feed every camera at 5 Hz; the dining camera's condition is switchable.
 	var mu sync.Mutex
-	cam2 := func(o *eventengine.Observation) {}
-	setCam2 := func(f func(*eventengine.Observation)) { mu.Lock(); cam2 = f; mu.Unlock() }
+	dining := func(o *eventengine.Observation) {}
+	setDining := func(f func(*eventengine.Observation)) { mu.Lock(); dining = f; mu.Unlock() }
 	ctx, stopFeed := context.WithCancel(context.Background())
 	fed := make(chan struct{})
 	go func() {
@@ -78,11 +82,11 @@ func TestOverviewStates(t *testing.T) {
 		defer tk.Stop()
 		for {
 			now := time.Now().UTC()
-			o2 := observation("cam2", now)
+			o2 := observation("cam-dining", now)
 			mu.Lock()
-			cam2(&o2)
+			dining(&o2)
 			mu.Unlock()
-			e.ingest(testToken, observation("cam1", now), o2, observation("cam3", now))
+			e.ingest(testToken, observation("cam-counter", now), o2, observation("cam-kitchen", now), observation("cam-back", now))
 			select {
 			case <-ctx.Done():
 				return
@@ -92,26 +96,26 @@ func TestOverviewStates(t *testing.T) {
 	}()
 	defer func() { stopFeed(); <-fed }()
 
-	eventually(t, 3*time.Second, "facility operational", func() bool { return getOverview(t, e, care).State == "FULLY_OPERATIONAL" })
+	eventually(t, 3*time.Second, "facility operational", func() bool { return getOverview(t, e, stf).State == "FULLY_OPERATIONAL" })
 
-	setCam2(func(o *eventengine.Observation) { o.Quality = eventengine.Quality{Degraded: true, Reason: "blur"} })
+	setDining(func(o *eventengine.Observation) { o.Quality = eventengine.Quality{Degraded: true, Reason: "blur"} })
 	eventually(t, 3*time.Second, "video degraded", func() bool {
-		o := getOverview(t, e, care)
-		return o.State == "VIDEO_DEGRADED" && roomState(o, "infants-a") == "VIDEO_DEGRADED" && roomState(o, "toddlers") == "FULLY_OPERATIONAL"
+		o := getOverview(t, e, stf)
+		return o.State == "VIDEO_DEGRADED" && roomState(o, "dining") == "VIDEO_DEGRADED" && roomState(o, "back") == "FULLY_OPERATIONAL"
 	})
 
-	setCam2(func(o *eventengine.Observation) { o.AIAvailable = false })
+	setDining(func(o *eventengine.Observation) { o.AIAvailable = false })
 	eventually(t, 3*time.Second, "AI unavailable", func() bool {
-		o := getOverview(t, e, care)
-		return o.State == "AI_UNAVAILABLE" && camStateOf(o, "cam2") == "AI_UNAVAILABLE" && camStateOf(o, "cam1") == "FULLY_OPERATIONAL"
+		o := getOverview(t, e, stf)
+		return o.State == "AI_UNAVAILABLE" && camStateOf(o, "cam-dining") == "AI_UNAVAILABLE" && camStateOf(o, "cam-counter") == "FULLY_OPERATIONAL"
 	})
 
 	// Feed stops: after the stale window every camera is unavailable.
 	stopFeed()
 	<-fed
 	eventually(t, 6*time.Second, "cameras unavailable", func() bool {
-		o := getOverview(t, e, care)
-		return o.State == "CAMERA_UNAVAILABLE" && camStateOf(o, "cam1") == "CAMERA_UNAVAILABLE" && camStateOf(o, "cam3") == "CAMERA_UNAVAILABLE"
+		o := getOverview(t, e, stf)
+		return o.State == "CAMERA_UNAVAILABLE" && camStateOf(o, "cam-counter") == "CAMERA_UNAVAILABLE" && camStateOf(o, "cam-back") == "CAMERA_UNAVAILABLE"
 	})
 
 	// A stalled engine loop freezes the last reported states; they must not
@@ -123,20 +127,40 @@ func TestOverviewStates(t *testing.T) {
 	}
 	e.s.lastEngine = time.Now().Add(-10 * time.Second)
 	e.s.mu.Unlock()
-	o = getOverview(t, e, care)
-	if o.State != "AI_UNAVAILABLE" || camStateOf(o, "cam1") != "AI_UNAVAILABLE" || o.Services["engine"] != "error" || o.Services["engine_error"] == "" {
+	o = getOverview(t, e, stf)
+	if o.State != "AI_UNAVAILABLE" || camStateOf(o, "cam-counter") != "AI_UNAVAILABLE" || o.Services["engine"] != "error" || o.Services["engine_error"] == "" {
 		t.Fatalf("stalled engine overview: state=%s services=%v", o.State, o.Services)
 	}
 	var cams []struct{ ID, State string }
-	e.getJSON(care, "/api/v1/cameras", &cams)
+	e.getJSON(stf, "/api/v1/cameras", &cams)
 	for _, c := range cams {
 		if c.State == "FULLY_OPERATIONAL" {
 			t.Fatalf("camera %s green while the engine is stalled", c.ID)
 		}
 	}
-	if st, _ := e.do(care, "GET", "/readyz", ""); st != http.StatusServiceUnavailable {
+	if st, _ := e.do(stf, "GET", "/readyz", ""); st != http.StatusServiceUnavailable {
 		t.Fatalf("readyz with stalled engine: %d", st)
 	}
+}
+
+func roomCams(o overviewResp, id string) int {
+	for _, r := range o.Rooms {
+		if r.ID == id {
+			return len(r.Cameras)
+		}
+	}
+	return -1
+}
+
+func camPriority(o overviewResp, id string) bool {
+	for _, r := range o.Rooms {
+		for _, c := range r.Cameras {
+			if c.ID == id {
+				return c.Priority
+			}
+		}
+	}
+	return false
 }
 
 func camState2(st string) camState { return camState{State: st, Since: time.Now()} }

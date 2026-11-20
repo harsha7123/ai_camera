@@ -35,22 +35,58 @@ const (
 )
 
 // Test users, one per role.
-var roleUser = map[string]string{"caregiver": "care", "lead": "lead", "reviewer": "rev", "admin": "adm"}
+var roleUser = map[string]string{"staff": "stan", "manager": "mia", "owner": "olga", "admin": "adm"}
 
 func rect(x1, y1, x2, y2 float64) []eventengine.Point {
 	return []eventengine.Point{{X: x1, Y: y1}, {X: x2, Y: y1}, {X: x2, Y: y2}, {X: x1, Y: y2}}
 }
 
+// testCams is a subset of Harbor Grill (site.example.json). The "back" room
+// starts with no camera.
 var testCams = []store.Camera{
-	{ID: "cam1", RoomID: "infants-a", Name: "Changing table", Protected: true, Enabled: true,
-		AuthorizedBy: "Director", AuthorizedAt: "2026-10-01", AuthorizationScope: "Room A",
+	{ID: "cam-counter", RoomID: "counter", Name: "Register 1 overhead", Priority: true, Enabled: true,
+		AuthorizedBy: "Owner", AuthorizedAt: "2026-10-01", AuthorizationScope: "Register 1 and its queue; video only",
 		Zones: []eventengine.Zone{
-			{ID: "table", RoomZone: "changing-table-1", Kind: eventengine.ZoneSurface, Polygon: rect(0.1, 0.3, 0.4, 0.5)},
-			{ID: "door", RoomZone: "kitchen-door", Kind: eventengine.ZoneRestricted, Polygon: rect(0.8, 0.5, 1.0, 1.0)},
+			{ID: "reg1-staff", RoomZone: "register-1", Kind: eventengine.ZonePost, Polygon: rect(0.3, 0, 0.7, 0.35)},
+			{ID: "behind-counter", RoomZone: "behind-counter", Kind: eventengine.ZoneStaffArea, Polygon: rect(0, 0, 1, 0.4)},
+			{ID: "reg1-front", RoomZone: "register-1-front", Kind: eventengine.ZoneCustomerSide, Polygon: rect(0.25, 0.45, 0.75, 0.7)},
+			{ID: "queue", RoomZone: "counter-queue", Kind: eventengine.ZoneQueue, Polygon: rect(0.2, 0.45, 0.8, 1)},
 		}},
-	{ID: "cam2", RoomID: "infants-a", Name: "Overview", Enabled: true,
-		AuthorizedBy: "Director", AuthorizedAt: "2026-10-01", AuthorizationScope: "Room A",
-		Zones: []eventengine.Zone{{ID: "door-b", RoomZone: "kitchen-door", Kind: eventengine.ZoneRestricted, Polygon: rect(0, 0.4, 0.3, 1)}}},
+	{ID: "cam-dining", RoomID: "dining", Name: "Dining room", Enabled: true,
+		AuthorizedBy: "Owner", AuthorizedAt: "2026-10-01", AuthorizationScope: "Dining room floor",
+		Zones: []eventengine.Zone{
+			{ID: "floor", RoomZone: "dining-floor", Kind: eventengine.ZoneFloor, Polygon: rect(0, 0.3, 1, 1)},
+			{ID: "office-door", RoomZone: "office", Kind: eventengine.ZoneRestricted, Polygon: rect(0.85, 0.2, 1, 0.6)},
+		}},
+	{ID: "cam-kitchen", RoomID: "kitchen", Name: "Kitchen wide", StaffOnly: true, Enabled: true,
+		AuthorizedBy: "Owner", AuthorizedAt: "2026-10-01", AuthorizationScope: "Kitchen line and walk-in cooler door",
+		Zones: []eventengine.Zone{
+			{ID: "cooler-door", RoomZone: "walk-in-cooler", Kind: eventengine.ZoneSecure, Polygon: rect(0.75, 0.2, 0.95, 0.7)},
+		}},
+}
+
+var testRegisters = []eventengine.Register{
+	{ID: "reg1", Name: "Register 1", CameraID: "cam-counter", CustomerZone: "reg1-front", RoomZone: "register-1"},
+}
+
+// closedNowSchedule returns business hours (UTC) that exclude the current
+// time on every day, with no staff allowance: anyone seen now is after hours.
+func closedNowSchedule(t *testing.T) *eventengine.Schedule {
+	t.Helper()
+	now := time.Now().UTC()
+	span := [2]string{now.Add(2 * time.Hour).Format("15:04"), now.Add(3 * time.Hour).Format("15:04")}
+	week := map[string][][2]string{}
+	for _, d := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
+		week[d] = [][2]string{span}
+	}
+	s, err := eventengine.NewSchedule(&eventengine.BusinessHoursConfig{Timezone: "UTC", Weekly: week})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.InStaffWindow(now) {
+		t.Fatal("schedule must be closed now")
+	}
+	return s
 }
 
 type env struct {
@@ -67,10 +103,11 @@ type env struct {
 }
 
 type envOpts struct {
-	cfg     Config
-	rules   []eventengine.Rule
-	noRun   bool // do not start the engine loop
-	webhook string
+	cfg      Config
+	rules    []eventengine.Rule
+	schedule *eventengine.Schedule // nil: always open
+	noRun    bool                  // do not start the engine loop
+	webhook  string
 }
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -85,9 +122,11 @@ func newEnv(t *testing.T, o envOpts) *env {
 			t.Fatal(err)
 		}
 	}
-	must(db.UpsertFacility(ctx, "f1", "Sunflower Nursery"))
-	must(db.UpsertRoom(ctx, "f1", store.Room{ID: "infants-a", Name: "Infants A"}))
-	must(db.UpsertRoom(ctx, "f1", store.Room{ID: "toddlers", Name: "Toddlers"}))
+	must(db.UpsertFacility(ctx, "harbor-grill", "Harbor Grill"))
+	for _, r := range []store.Room{{ID: "counter", Name: "Front counter"}, {ID: "dining", Name: "Dining room"},
+		{ID: "kitchen", Name: "Kitchen"}, {ID: "back", Name: "Back of house"}} {
+		must(db.UpsertRoom(ctx, "harbor-grill", r))
+	}
 	var engineCams []eventengine.Camera
 	for _, c := range testCams {
 		must(db.UpsertCamera(ctx, c))
@@ -119,7 +158,8 @@ func newEnv(t *testing.T, o envOpts) *env {
 	h := hub.New()
 	disp := &alerts.Dispatcher{DB: db, Hub: h, Client: &http.Client{Timeout: 2 * time.Second}, Log: quietLog(),
 		Cfg: alerts.Config{WebhookURL: o.webhook, AckTimeout: time.Hour, MaxLevel: 2, Interval: 20 * time.Millisecond}}
-	e.s = New(cfg, db, h, &auth.Service{DB: db}, vault, disp, quietLog(), engineCams, rules)
+	e.s = New(cfg, db, h, &auth.Service{DB: db}, vault, disp, quietLog(), engineCams, rules,
+		eventengine.Site{Schedule: o.schedule, Registers: testRegisters})
 	e.api = httptest.NewServer(e.s.Handler())
 	e.internal = httptest.NewServer(e.s.InternalHandler())
 
@@ -239,19 +279,7 @@ func (e *env) ingest(token string, obs ...eventengine.Observation) (int, map[str
 
 func (e *env) ingestRaw(token, body string) (int, map[string]any) {
 	e.t.Helper()
-	req, _ := http.NewRequest("POST", e.internal.URL+"/internal/v1/observations", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-ndjson")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var out map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&out)
-	return resp.StatusCode, out
+	return e.postInternal(token, "/internal/v1/observations", body)
 }
 
 type sseEvent struct {
@@ -364,12 +392,14 @@ func eventually(t *testing.T, within time.Duration, what string, cond func() boo
 
 // Observation builders. Boxes are [x1,y1,x2,y2] with the foot at (x, y).
 
-func adultAt(id string, x, y float64) eventengine.Track {
-	return eventengine.Track{ID: id, Role: eventengine.RoleAdult, Score: 0.9, Box: [4]float64{x - 0.05, y - 0.3, x + 0.05, y}, PoseQuality: 0.8, Visibility: 1}
+// personAt is a standing person whose feet are at (x, y).
+func personAt(id string, x, y float64) eventengine.Track {
+	return eventengine.Track{ID: id, Role: eventengine.RolePerson, Score: 0.9, Box: [4]float64{x - 0.05, y - 0.3, x + 0.05, y}, PoseQuality: 0.8, Visibility: 1}
 }
 
-func infantAt(id string, x, y float64) eventengine.Track {
-	return eventengine.Track{ID: id, Role: eventengine.RoleInfant, Score: 0.8, Box: [4]float64{x - 0.04, y - 0.08, x + 0.04, y}, PoseQuality: 0.7, Visibility: 1}
+// lyingAt is a person lying down, centred on (x, y): wide and short.
+func lyingAt(id string, x, y float64) eventengine.Track {
+	return eventengine.Track{ID: id, Role: eventengine.RolePerson, Score: 0.8, Box: [4]float64{x - 0.15, y - 0.06, x + 0.15, y + 0.06}, PoseQuality: 0.7, Visibility: 1}
 }
 
 func observation(cam string, ts time.Time, tracks ...eventengine.Track) eventengine.Observation {
@@ -377,5 +407,28 @@ func observation(cam string, ts time.Time, tracks ...eventengine.Track) eventeng
 		tracks = []eventengine.Track{}
 	}
 	return eventengine.Observation{CameraID: cam, CaptureTS: ts, Source: eventengine.SourceMock, AIAvailable: true,
-		ModelVersions: map[string]string{"detector": "mock-0"}, Tracks: tracks}
+		FrameSize: [2]int{1920, 1080}, ModelVersions: map[string]string{"detector": "mock-0"}, Tracks: tracks}
+}
+
+// postPOS posts POS events as NDJSON lines to the internal listener.
+func (e *env) postPOS(token, body string) (int, map[string]any) {
+	e.t.Helper()
+	return e.postInternal(token, "/internal/v1/pos-events", body)
+}
+
+func (e *env) postInternal(token, path, body string) (int, map[string]any) {
+	e.t.Helper()
+	req, _ := http.NewRequest("POST", e.internal.URL+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
 }

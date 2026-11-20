@@ -26,7 +26,7 @@ export function serviceProblems(o: Overview): Problem[] {
   const out: Problem[] = [];
   if (o.services.engine !== "ok") out.push({ key: "engine", text: `Event engine error${o.services.engine_error ? `: ${o.services.engine_error}` : ""} — no automated alerts`, severe: true });
   if (o.services.database !== "ok") out.push({ key: "db", text: "Database unavailable — incident history delayed", severe: true });
-  if (o.services.evidence !== "ok") out.push({ key: "evidence", text: "Evidence storage unavailable — clips may not be saved", severe: false });
+  if (o.services.evidence !== "ok") out.push({ key: "evidence", text: "Clip storage unavailable — clips may not be saved", severe: false });
   if (o.alerts_health.failed > 0) out.push({ key: "afail", text: `Alert delivery failing (${o.alerts_health.failed})`, severe: true });
   if (o.alerts_health.delayed > 0) out.push({ key: "adelay", text: `Alert delivery delayed (${o.alerts_health.delayed})`, severe: false });
   return out;

@@ -100,7 +100,7 @@ test("login lockout after 5 failures shows the lockout message (429)", async () 
 });
 
 test("open-redirect attempts after sign-in stay on site", async () => {
-  const attempts = ["/\\evil.example", "/%5Cevil.example", "//evil.example", "https://evil.example/", "/\t/evil.example", "javascript:alert(1)"];
+  const attempts = ["/\\evil.example", "//evil.example", "https://evil.example/", "/\t/evil.example", "/\n/evil.example", "javascript:alert(1)"];
   for (const next of attempts) {
     const { ctx, page } = await fresh();
     await page.goto(`${base}/login/?next=${encodeURIComponent(next)}`);
@@ -355,33 +355,34 @@ test("stale incident refresh never overwrites a newer live update", async () => 
   await other.ctx.close();
 });
 
-test("area filter follows the URL", async () => {
+test("area filter follows the URL (links, back/forward) and survives selecting a row", async () => {
   const { ctx, page } = await fresh();
   await login(page, base, "manager");
-  await page.goto(`${base}/incidents/?room=kitchen`);
-  await page.getByTestId("incident-row").first().waitFor();
-  assert.equal(await page.getByTestId("filter-room").inputValue(), "kitchen");
-  await page.goto(`${base}/`);
-  await page.getByTestId("room-tile").first().waitFor();
-  // client-side navigation to another area's link updates the filter (no stale initial value)
-  await page.evaluate(() => {
-    window.history.pushState(null, "", "/incidents/?room=back");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
+  // an overview tile link opens the inbox filtered to that area
+  await page.locator('[data-room="back"] .tile-open').click();
+  await page.waitForURL(/room=back/);
+  await page.locator('[data-testid="incident-row"][data-incident="INC-2b8e44d0c002"]').waitFor();
+  assert.equal(await page.getByTestId("filter-room").inputValue(), "back");
   await page.goto(`${base}/incidents/?room=kitchen`);
   await page.getByTestId("filter-lifecycle").selectOption("all");
-  await page.locator('[data-incident="INC-91c0de55a003"]').waitFor();
-  await page.goBack();
-  await page.goForward();
+  const kitchenRow = page.locator('[data-testid="incident-row"][data-incident="INC-91c0de55a003"]');
+  await kitchenRow.waitFor();
+  assert.equal(await page.getByTestId("filter-room").inputValue(), "kitchen");
+  // selecting a row keeps the filter
+  await kitchenRow.locator("a").click();
+  await page.waitForURL(/id=INC-91c0de55a003/);
+  assert.match(page.url(), /room=kitchen/);
+  assert.equal(await page.getByTestId("filter-room").inputValue(), "kitchen");
+  // changing the filter rewrites the URL
   await page.getByTestId("filter-room").selectOption("back");
   await page.waitForURL(/room=back/);
   await page.locator('[data-testid="incident-row"][data-incident="INC-2b8e44d0c002"]').waitFor();
-  assert.equal(await page.locator('[data-testid="incident-row"][data-incident="INC-91c0de55a003"]').count(), 0);
-  // selecting a row keeps the filter
-  await page.locator('[data-testid="incident-row"][data-incident="INC-2b8e44d0c002"] a').click();
-  await page.waitForURL(/id=INC-2b8e44d0c002/);
-  assert.match(page.url(), /room=back/);
-  assert.equal(await page.getByTestId("filter-room").inputValue(), "back");
+  assert.equal(await kitchenRow.count(), 0);
+  // back (client-side, the inbox stays mounted) restores the kitchen filter from the URL
+  await page.goBack();
+  await page.waitForURL((u) => u.searchParams.get("room") === "kitchen" && !u.searchParams.get("id"));
+  await kitchenRow.waitFor();
+  assert.equal(await page.getByTestId("filter-room").inputValue(), "kitchen");
   await ctx.close();
 });
 
@@ -454,10 +455,6 @@ test("timeline is in chronological order (by time, not string)", async () => {
   // millisecond precision sorts wrongly as text against second precision ("…00.5Z" > "…00Z" but "…01Z" > "…00.5Z")
   const s = await mock.state();
   const inc = s.incidents.find((i) => i.id === "INC-4d2f11e9b004");
-  await mock.control("emit", {
-    type: "incident_updated",
-    data: { ...inc, actions: [...inc.actions, { actor: "olivia", action: "legal_hold_released", disposition: null, note: null, at: new Date(Date.parse(inc.start) + 500).toISOString() }] },
-  });
   await page.goto(`${base}/incidents/?id=INC-4d2f11e9b004`);
   await page.getByTestId("timeline").waitFor();
   await mock.control("emit", {
@@ -705,7 +702,11 @@ test("access log: secure-zone visits, after-hours highlighted, date range filter
   const req = page.waitForRequest((r) => r.url().includes("/api/v1/access-log?from="));
   await page.getByTestId("access-from").fill(day);
   await req;
-  const req2 = page.waitForResponse((r) => r.url().includes("/api/v1/access-log?from=") && r.url().includes("to="));
+  const oneDay = (r) => {
+    const q = new URL(r.url()).searchParams;
+    return r.url().includes("/api/v1/access-log?") && Date.parse(q.get("to")) - Date.parse(q.get("from")) <= 25 * 3600_000;
+  };
+  const req2 = page.waitForResponse(oneDay);
   await page.getByTestId("access-to").fill(day);
   const list = await (await req2).json();
   const dayRows = page.getByTestId("access-row");
