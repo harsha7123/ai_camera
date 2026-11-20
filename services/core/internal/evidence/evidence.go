@@ -109,13 +109,21 @@ func (v *Vault) Store(clipID, src string) (*Stored, error) {
 
 	dst := filepath.Join(v.Dir, clipID+".enc")
 	tmp := dst + ".part"
-	if err := os.WriteFile(tmp, ct, 0o600); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := writeSynced(tmp, ct); err != nil {
 		os.Remove(tmp)
 		return nil, err
 	}
+	// Link (unlike rename) fails if dst exists: an existing clip, whose key
+	// is already wrapped in the database, is never replaced.
+	if err := os.Link(tmp, dst); err != nil {
+		os.Remove(tmp)
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("%w: %s", ErrExists, clipID)
+		}
+		return nil, err
+	}
+	os.Remove(tmp)
+	syncDir(v.Dir)
 	if err := os.Remove(src); err != nil {
 		return nil, fmt.Errorf("encrypted, but could not remove plaintext %s: %w", src, err)
 	}
@@ -170,4 +178,32 @@ func (v *Vault) CheckWritable() error {
 	cerr := f.Close()
 	rerr := os.Remove(name)
 	return errors.Join(werr, cerr, rerr)
+}
+
+// ErrExists means a clip with this id is already in the vault.
+var ErrExists = errors.New("clip already exists in the vault")
+
+// writeSynced writes a new file (never an existing one) and fsyncs it, so a
+// power cut cannot leave a renamed-but-empty clip.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
 }

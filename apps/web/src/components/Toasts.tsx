@@ -10,7 +10,7 @@ export function Toasts() {
   const other = toasts.filter((t) => t.tone !== "urgent");
   const render = (list: typeof toasts) =>
     list.map((t) => (
-      <div key={t.id} className={`toast toast-${t.tone}`} data-testid="toast">
+      <div key={t.id} className={`toast toast-${t.tone}`} data-testid="toast" data-tone={t.tone} data-sticky={t.sticky ? "true" : "false"}>
         <Icon name={t.tone === "urgent" ? "triangle" : t.tone === "degraded" ? "half" : "bang"} size={20} />
         <div className="toast-body">
           <p className="toast-title">{t.title}</p>
@@ -27,7 +27,7 @@ export function Toasts() {
       </div>
     ));
   return (
-    <div className="toasts">
+    <div className="toasts" data-testid="toasts">
       <div role="alert" aria-live="assertive" className="toast-stack">
         {render(urgent)}
       </div>

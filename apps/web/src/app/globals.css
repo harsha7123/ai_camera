@@ -1460,6 +1460,9 @@ main {
   flex-direction: column;
   gap: var(--s-2);
   width: min(420px, calc(100vw - 32px));
+  /* Unacknowledged urgent toasts are never evicted, so the stack may scroll. */
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 .toast-stack {
   display: flex;
@@ -1630,6 +1633,7 @@ main {
   .toasts {
     bottom: calc(72px + var(--s-2));
     right: var(--s-4);
+    max-height: calc(100vh - 72px - 32px);
   }
   .banner {
     padding: var(--s-3) var(--s-4);
@@ -1700,5 +1704,189 @@ main {
   .banner,
   .chain {
     border: 2px solid CanvasText;
+  }
+}
+
+/* ------------------------------------------------------------------ restaurant additions */
+.banner-region:empty {
+  display: none;
+}
+.biz {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--fs-14);
+  font-weight: 600;
+  padding: 2px var(--s-2);
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  background: var(--surface-2);
+}
+.biz-closed {
+  border-style: dashed;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+.admin-side {
+  display: grid;
+  gap: var(--s-5);
+}
+.edit-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+  border-top: 1px solid var(--border);
+}
+.edit-block .field {
+  flex: 1 1 220px;
+  margin: 0;
+}
+.zone-kinds {
+  margin: var(--s-3) 0;
+}
+.zone-kinds summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.kv-pair {
+  display: contents;
+}
+.pos-search {
+  margin-bottom: var(--s-2);
+}
+.row-after-hours td {
+  background: var(--deg-bg);
+  color: var(--deg-fg);
+}
+.row-after-hours td .muted {
+  color: inherit;
+}
+
+/* traffic */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s-4);
+  margin-bottom: var(--s-5);
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: var(--s-4);
+  box-shadow: var(--shadow);
+}
+.stat-label {
+  margin: 0;
+  font-size: var(--fs-14);
+  color: var(--muted);
+  font-weight: 600;
+}
+.stat-value {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-24);
+  font-weight: 700;
+}
+/* Single-hue sequential ramp, light -> dark; every cell also prints its number. */
+:root {
+  --hm-0: #f8fafc;
+  --hm-1: #dbeafe;
+  --hm-2: #93c5fd;
+  --hm-3: #2563eb;
+  --hm-4: #1e3a8a;
+  --hm-ink-light: #0f172a;
+  --hm-ink-dark: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hm-0: #111a2e;
+    --hm-1: #1e3a5f;
+    --hm-2: #1d4ed8;
+    --hm-3: #60a5fa;
+    --hm-4: #bfdbfe;
+    --hm-ink-light: #f1f5f9;
+    --hm-ink-dark: #0b1220;
+  }
+}
+:root[data-theme="dark"] {
+  --hm-0: #111a2e;
+  --hm-1: #1e3a5f;
+  --hm-2: #1d4ed8;
+  --hm-3: #60a5fa;
+  --hm-4: #bfdbfe;
+  --hm-ink-light: #f1f5f9;
+  --hm-ink-dark: #0b1220;
+}
+.heatmap {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+.heatmap th {
+  font-weight: 600;
+  color: var(--muted);
+  padding: 2px 4px;
+  text-align: center;
+}
+.heatmap tbody th {
+  text-align: left;
+  padding-right: var(--s-2);
+}
+.hm-cell {
+  min-width: 34px;
+  height: 30px;
+  text-align: center;
+  border-radius: 4px;
+  padding: 0 2px;
+}
+.hm-0 {
+  background: var(--hm-0);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.hm-1 {
+  background: var(--hm-1);
+  color: var(--hm-ink-light);
+}
+.hm-2 {
+  background: var(--hm-2);
+  color: var(--hm-ink-light);
+}
+.hm-3 {
+  background: var(--hm-3);
+  color: var(--hm-ink-dark);
+}
+.hm-4 {
+  background: var(--hm-4);
+  color: var(--hm-ink-dark);
+}
+.hm-peak {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+  font-weight: 700;
+}
+.hm-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--s-3);
+}
+.hm-swatch {
+  width: 20px;
+  height: 14px;
+  border-radius: 3px;
+}
+@media (forced-colors: active) {
+  .hm-cell,
+  .hm-swatch {
+    border: 1px solid CanvasText;
   }
 }

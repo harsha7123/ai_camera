@@ -1,7 +1,7 @@
 """zeoatap-vision: run camera ingest and emit observations.
 
   zeoatap-vision --config cameras.json --observations obs.jsonl --detector none
-  ZEOATAP_INTERNAL_TOKEN=... zeoatap-vision --config cameras.json --sink core --detector pose
+  ZEOATAP_INTERNAL_TOKEN=... zeoatap-vision --config cameras.json --sink core --detector person
 """
 
 from __future__ import annotations
@@ -24,27 +24,26 @@ def build_detector(args):
     if args.detector == "mock":
         logging.warning("MOCK detector: observations are not real detections")
         return MockDetector()
-    if args.detector == "pose":
+    if args.detector in ("person", "pose"):
         from .models import ModelMissing
         try:
-            from .pipeline import PosePipeline
-            det = PosePipeline(detector_model=args.det_model, pose_model=args.pose_model,
-                               model_dir=args.model_dir, device=args.device, threads=args.threads,
-                               frame_width=args.analysis_width,
-                               infant_pose_model=None if args.infant_pose_model == "none" else args.infant_pose_model)
+            from .pipeline import PersonPipeline
+            det = PersonPipeline(detector_model=args.det_model,
+                                 pose_model=args.pose_model if args.detector == "pose" else None,
+                                 model_dir=args.model_dir, device=args.device, threads=args.threads,
+                                 frame_width=args.analysis_width)
         except (ModelMissing, ImportError) as e:
             # Keep running for camera health; core shows AI_UNAVAILABLE, never green.
-            logging.error("pose pipeline unavailable (%s); running with ai_available=false", e)
+            logging.error("person pipeline unavailable (%s); running with ai_available=false", e)
             return NoDetector()
-        logging.warning("pose pipeline loaded (%s). Models are public pretrained weights, "
-                        "UNVALIDATED for infants and CCTV; roles and held state are heuristics.",
-                        det.provider)
+        logging.warning("person pipeline loaded (%s, pose %s). Models are public pretrained weights, "
+                        "UNVALIDATED on restaurant CCTV.", det.provider, "on" if det.pose else "off")
         return det
     return NoDetector()
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .models import DEFAULT_DETECTOR, DEFAULT_INFANT_POSE, DEFAULT_POSE, MODELS
+    from .models import DEFAULT_DETECTOR, DEFAULT_POSE, MODELS
 
     ap = argparse.ArgumentParser(prog="zeoatap-vision")
     ap.add_argument("--config", required=True, help="camera config JSON")
@@ -54,17 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--core-url", default="http://127.0.0.1:8090",
                     help="core internal listener (--sink core); token from $" + TOKEN_ENV)
     ap.add_argument("--sink-buffer", type=int, default=5000, help="max observations buffered for core")
-    ap.add_argument("--detector", choices=["none", "mock", "pose"], default="none",
-                    help="'none' = health only (AI_UNAVAILABLE); 'mock' = labelled MOCK, for pipeline tests; "
-                         "'pose' = YOLOX + ByteTrack + RTMPose pipeline (pretrained, UNVALIDATED)")
+    ap.add_argument("--detector", choices=["none", "mock", "person", "pose"], default="none",
+                    help="'none' = health only (AI_UNAVAILABLE); 'mock' = synthetic tracks labelled MOCK, "
+                         "for pipeline tests; 'person' = YOLOX + ByteTrack (pretrained, UNVALIDATED); "
+                         "'pose' = person + RTMPose, which only adds pose_quality/visibility")
     ap.add_argument("--det-model", choices=[m for m, s in MODELS.items() if s.kind == "detector"],
                     default=DEFAULT_DETECTOR)
     ap.add_argument("--pose-model", choices=[m for m, s in MODELS.items() if s.kind == "pose"],
-                    default=DEFAULT_POSE)
-    ap.add_argument("--infant-pose-model", default=DEFAULT_INFANT_POSE,
-                    choices=[m for m, s in MODELS.items() if s.kind == "infant_pose"] + ["none"],
-                    help="FiDIP model for tracks classified as infant (fidip-mobile for CPU, "
-                         "fidip-hrnet-w48 for GPU); 'none' = RTMPose for everyone")
+                    default=DEFAULT_POSE, help="pose model for --detector pose")
     ap.add_argument("--model-dir", default=None, help="default: $ZEOATAP_MODEL_DIR or services/vision-worker/models")
     ap.add_argument("--device", choices=["auto", "cpu"], default="auto",
                     help="auto = TensorRT > CUDA > CPU, whichever onnxruntime offers")
@@ -73,7 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--health-host", default="127.0.0.1")
     ap.add_argument("--health-port", type=int, default=8081)
     ap.add_argument("--clip-dir", default=None,
-                    help="if set, POST /v1/clips only writes inside this directory")
+                    help="POST /v1/clips only writes inside this directory (default: $ZEOATAP_CLIP_SPOOL_DIR "
+                         "or /var/lib/zeoatap/spool, as in core)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,

@@ -19,8 +19,25 @@ export function wasSignedIn(): boolean {
   }
 }
 
-/** Only allow same-site relative paths as post-login destinations. */
-export function safeNext(next: string | null): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/login")) return "/";
-  return next;
+// Backslashes are treated as "/" by URL parsers ("/\\evil.example" is a
+// protocol-relative URL), and control characters (tab, newline) are stripped
+// before parsing, so neither may appear in a post-login destination.
+const UNSAFE_CHARS = /[\\\u0000-\u001f\u007f]/;
+
+/**
+ * Only allow same-origin paths as post-login destinations. The value is
+ * parsed against the current origin and rejected unless it stays on it.
+ */
+export function safeNext(next: string | null, origin: string = typeof window === "undefined" ? "http://localhost" : window.location.origin): string {
+  if (!next || UNSAFE_CHARS.test(next) || !next.startsWith("/") || next.startsWith("//")) return "/";
+  let u: URL;
+  try {
+    u = new URL(next, origin);
+  } catch {
+    return "/";
+  }
+  if (u.origin !== origin) return "/";
+  const path = `${u.pathname}${u.search}${u.hash}`;
+  if (!path.startsWith("/") || path.startsWith("//") || path === "/login" || path.startsWith("/login/") || path.startsWith("/login?")) return "/";
+  return path;
 }

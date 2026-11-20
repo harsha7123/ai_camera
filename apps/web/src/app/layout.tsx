@@ -4,8 +4,8 @@ import { THEME_BOOT } from "@/components/ThemeToggle";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Zeoatap — Staff dashboard",
-  description: "Monitoring status, incident review and administration for Zeoatap safety support.",
+  title: "Zeoatap Restaurant Watchdog",
+  description: "Camera status, alerts for review, foot traffic and access log for your restaurant. AI flags, humans decide.",
   robots: { index: false, follow: false },
 };
 

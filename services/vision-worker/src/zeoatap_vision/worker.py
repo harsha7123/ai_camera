@@ -3,7 +3,8 @@ runs quality checks and the detector, and emits observations. On a GPU this
 is where frames from several cameras are batched.
 
 The health server also hosts the core -> vision clip endpoint (POST /v1/clips,
-packages/contracts/API.md). It binds to 127.0.0.1 by default."""
+packages/contracts/API.md). It binds to 127.0.0.1 by default. Clips are only
+ever written inside one spool directory (shared with core)."""
 
 from __future__ import annotations
 
@@ -21,12 +22,16 @@ from pathlib import Path
 
 from .camera import CameraWorker, NoVideoError, StreamState
 from .config import WorkerConfig, redact
-from .observation import Detector, build_observation
+from .observation import Detector, build_observation, sanitize_tracks
 from .quality import QualityMonitor
 
 log = logging.getLogger(__name__)
 
 RGB_QUEUE_SIZE = 4  # per camera, when RGB analysis frames are queued (~0.7 MB each at 640x360)
+DEFAULT_CLIP_DIR = os.environ.get("ZEOATAP_CLIP_SPOOL_DIR") or "/var/lib/zeoatap/spool"  # same default as core
+# The analysis loop is unhealthy (not ready, ai_available=false in /status)
+# after this many consecutive failed iterations; one success clears it.
+LOOP_FAIL_LIMIT = 5
 
 
 class VisionWorker:
@@ -42,7 +47,12 @@ class VisionWorker:
         self.started_at = time.time()
         self.analysis_errors_total = 0
         self.frames_analyzed_total = 0
+        self.invalid_tracks_total = 0  # NaN / out-of-range tracks dropped before emitting
+        self.loop_errors_total = 0  # whole loop iterations that failed (process or sink.emit)
+        self.loop_consecutive_errors = 0
+        self.loop_last_error = ""
         self._last_err_log = 0.0
+        self._last_loop_err_log = 0.0
 
     def start(self) -> None:
         for cam in self.cameras.values():
@@ -75,28 +85,58 @@ class VisionWorker:
                 if now - self._last_err_log > 10:
                     self._last_err_log = now
                     log.warning("analysis failed on %s: %s", f.camera_id, redact(f"{type(e).__name__}: {e}"))
-        return build_observation(f.camera_id, f.wall_ts, q, self.detector, tracks, ai_available=ai_ok)
+        tracks, bad = sanitize_tracks(tracks)
+        self.invalid_tracks_total += bad
+        rgb = getattr(f, "rgb", None)
+        size = (rgb.shape[1], rgb.shape[0]) if rgb is not None else getattr(f, "frame_size", None)
+        return build_observation(f.camera_id, f.wall_ts, q, self.detector, tracks, ai_available=ai_ok,
+                                 frame_size=size)
+
+    @property
+    def analysis_healthy(self) -> bool:
+        return self.loop_consecutive_errors < LOOP_FAIL_LIMIT
 
     def _analyze(self) -> None:
         while not self._stop.is_set():
             idle = True
-            for cam in self.cameras.values():
+            for cam in list(self.cameras.values()):
                 f = cam.take_frame()
                 if f is None:
                     continue
                 idle = False
-                self.sink.emit(self.process(f))
+                self._analyze_one(f)
             if idle:
                 self._stop.wait(0.005)
+
+    def _analyze_one(self, f) -> None:
+        """One frame through process + sink. Never raises: an exception here
+        would silently kill the analysis thread while /readyz stayed green."""
+        try:
+            self.sink.emit(self.process(f))
+        except Exception as e:
+            self.loop_errors_total += 1
+            self.loop_consecutive_errors += 1
+            self.loop_last_error = redact(f"{type(e).__name__}: {e}")[:300]
+            now = time.monotonic()
+            if now - self._last_loop_err_log > 10 or self.loop_consecutive_errors == LOOP_FAIL_LIMIT:
+                self._last_loop_err_log = now
+                log.error("analysis loop failed on %s (%d in a row): %s", getattr(f, "camera_id", "?"),
+                          self.loop_consecutive_errors, self.loop_last_error)
+        else:
+            self.loop_consecutive_errors = 0
 
     def status(self) -> dict:
         cams = [c.status() for c in self.cameras.values()]
         st = {
             "detector": self.detector.name,
-            "ai_available": bool(self.detector.available),
+            "ai_available": bool(self.detector.available) and self.analysis_healthy,
+            "analysis_healthy": self.analysis_healthy,
             "observations_written": self.sink.written,
             "frames_analyzed_total": self.frames_analyzed_total,
             "analysis_errors_total": self.analysis_errors_total,
+            "analysis_loop_errors_total": self.loop_errors_total,
+            "analysis_loop_last_error": self.loop_last_error,
+            "invalid_tracks_total": self.invalid_tracks_total,
             "sink": self.sink.status() if hasattr(self.sink, "status") else {},
             "cameras": cams,
         }
@@ -105,9 +145,13 @@ class VisionWorker:
         return st
 
     def ready(self) -> bool:
-        """Ready means every camera is streaming. A worker that is up but
-        blind is alive (healthz) but not ready."""
-        return bool(self.cameras) and all(c.state == StreamState.STREAMING for c in self.cameras.values())
+        """Ready means every camera is streaming and the analysis loop is
+        alive and healthy. A worker that is up but blind is alive (healthz)
+        but not ready."""
+        if self._analysis.ident is not None and not self._analysis.is_alive() and not self._stop.is_set():
+            return False
+        return (bool(self.cameras) and self.analysis_healthy
+                and all(c.state == StreamState.STREAMING for c in self.cameras.values()))
 
 
 def metrics_text(st: dict) -> str:
@@ -126,7 +170,8 @@ def metrics_text(st: dict) -> str:
         lines.append(f'zeoatap_camera_ring_bytes{{camera="{c["camera_id"]}"}} {c["ring_bytes"]}')
     lines.append("# TYPE zeoatap_ai_available gauge")
     lines.append(f"zeoatap_ai_available {int(bool(st.get('ai_available')))}")
-    for name in ("frames_analyzed_total", "analysis_errors_total"):
+    for name in ("frames_analyzed_total", "analysis_errors_total", "analysis_loop_errors_total",
+                 "invalid_tracks_total"):
         lines.append(f"# TYPE zeoatap_analysis_{name} counter")
         lines.append(f"zeoatap_analysis_{name} {st.get(name, 0)}")
     pipe = st.get("pipeline")
@@ -139,7 +184,8 @@ def metrics_text(st: dict) -> str:
     sink = st.get("sink") or {}
     kind = sink.get("kind", "")
     for key, typ in (("emitted_total", "counter"), ("accepted_total", "counter"), ("written_total", "counter"),
-                     ("dropped_total", "counter"), ("rejected_total", "counter"), ("batches_total", "counter"),
+                     ("dropped_total", "counter"), ("rejected_total", "counter"), ("ignored_total", "counter"),
+                     ("invalid_total", "counter"), ("batches_total", "counter"),
                      ("failures_total", "counter"), ("retries_total", "counter"), ("buffered", "gauge")):
         if key in sink:
             lines.append(f"# TYPE zeoatap_sink_{key} {typ}")
@@ -165,7 +211,10 @@ def _num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
-def validate_clip_request(body: dict, clip_dir: Path | None, now: float) -> tuple[str, float, float, Path]:
+def validate_clip_request(body: dict, clip_dir: Path, now: float) -> tuple[str, float, float, Path]:
+    """Checks the request and returns the clip path with its directory
+    resolved (symlinks followed). The resolved directory must be inside the
+    resolved clip_dir, and the file name itself must not be a symlink."""
     if not isinstance(body, dict):
         raise ClipError(400, "body must be a JSON object")
     unknown = set(body) - {"camera_id", "start", "end", "path"}
@@ -187,11 +236,16 @@ def validate_clip_request(body: dict, clip_dir: Path | None, now: float) -> tupl
     p = Path(path)
     if not p.is_absolute() or p.suffix.lower() != ".mp4" or ".." in p.parts:
         raise ClipError(400, "path must be an absolute .mp4 path without '..'")
-    if clip_dir is not None:
-        root = clip_dir.resolve()
-        if not p.parent.resolve().is_relative_to(root):
-            raise ClipError(400, "path is outside the clip spool directory")
-    return cam, float(start), float(end), p
+    if clip_dir is None:
+        raise ClipError(503, "no clip spool directory configured")
+    root = Path(clip_dir).resolve()
+    parent = p.parent.resolve()
+    if not parent.is_relative_to(root):
+        raise ClipError(400, "path is outside the clip spool directory")
+    final = parent / p.name
+    if final.is_symlink() or Path(str(final) + ".part").is_symlink():
+        raise ClipError(400, "path is a symlink")
+    return cam, float(start), float(end), final
 
 
 def serve_health(worker: VisionWorker, host: str, port: int, token: str | None = None,
@@ -199,13 +253,15 @@ def serve_health(worker: VisionWorker, host: str, port: int, token: str | None =
     """Health, status, metrics and the clip control endpoint.
 
     POST /v1/clips needs `Authorization: Bearer <token>`; without a configured
-    token the endpoint is disabled (503)."""
+    token the endpoint is disabled (503). Clips are only written inside
+    clip_dir (default $ZEOATAP_CLIP_SPOOL_DIR or /var/lib/zeoatap/spool, the
+    same default as core); any other path is refused."""
     try:
         if not ipaddress.ip_address(host).is_loopback:
             log.warning("health/clip server bound to non-loopback address %s; keep it on a trusted network", host)
     except ValueError:
         log.warning("health/clip server bound to hostname %s; 127.0.0.1 is recommended", host)
-    clip_root = Path(clip_dir) if clip_dir else None
+    clip_root = Path(clip_dir or DEFAULT_CLIP_DIR).resolve()
     clip_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CLIPS)
     expected = f"Bearer {token}".encode() if token else None
 
@@ -268,7 +324,7 @@ def serve_health(worker: VisionWorker, host: str, port: int, token: str | None =
             cam = worker.cameras.get(cam_id)
             if cam is None:
                 raise ClipError(404, f"unknown camera {cam_id!r}")
-            oldest, newest = cam.ring.oldest_ts, cam.ring.newest_ts
+            oldest, newest, _, _ = cam.ring.span()
             if end < now and (newest is None or newest < start or oldest > end):
                 # A window entirely in the past that the ring does not cover can never be filled.
                 raise ClipError(422, "no buffered video covers the requested window")

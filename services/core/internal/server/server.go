@@ -1,6 +1,7 @@
 // Package server is the long-running core service: it owns the event engine,
-// ingests observations from vision-worker, persists incidents, captures and
-// encrypts evidence, and serves the staff API and live event stream.
+// ingests observations from vision-worker and POS events from POS connectors,
+// persists incidents, the access log and traffic counts, captures and encrypts
+// evidence, and serves the staff API and live event stream.
 package server
 
 import (
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,12 +21,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/alerts"
-	"github.com/saimouli3/zeoatap/services/core/internal/auth"
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
-	"github.com/saimouli3/zeoatap/services/core/internal/evidence"
-	"github.com/saimouli3/zeoatap/services/core/internal/hub"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/alerts"
+	"github.com/harsha7123/ai_camera/services/core/internal/auth"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/evidence"
+	"github.com/harsha7123/ai_camera/services/core/internal/hub"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
 type Config struct {
@@ -71,10 +73,16 @@ type Server struct {
 	Vault  *evidence.Vault
 	Alerts *alerts.Dispatcher
 	Log    *slog.Logger
+	// Throttle limits login attempts per username and per client IP.
+	Throttle *auth.Throttle
+	// Schedule is the site's business hours (nil: always open).
+	Schedule *eventengine.Schedule
 
-	engine *eventengine.Engine
-	obsCh  chan eventengine.Observation
-	ctlCh  chan func(*eventengine.Engine)
+	engine    *eventengine.Engine
+	obsCh     chan eventengine.Observation
+	posCh     chan eventengine.POSEvent
+	ctlCh     chan func(*eventengine.Engine)
+	registers map[string]bool
 
 	mu          sync.RWMutex
 	known       map[string]bool // cameras registered with the engine
@@ -104,17 +112,25 @@ type clipToken struct {
 }
 
 func New(cfg Config, db *store.DB, h *hub.Hub, a *auth.Service, v *evidence.Vault, al *alerts.Dispatcher,
-	log *slog.Logger, cams []eventengine.Camera, rules []eventengine.Rule) *Server {
+	log *slog.Logger, cams []eventengine.Camera, rules []eventengine.Rule, site eventengine.Site) *Server {
 	cfg.defaults()
 	known := map[string]bool{}
 	for _, c := range cams {
 		known[c.ID] = true
 	}
+	regs := map[string]bool{}
+	for _, r := range site.Registers {
+		regs[r.ID] = true
+	}
 	return &Server{
 		Cfg: cfg, DB: db, Hub: h, Auth: a, Vault: v, Alerts: al, Log: log,
-		engine:      eventengine.New(cams, rules, db),
+		Throttle:    &auth.Throttle{},
+		Schedule:    site.Schedule,
+		engine:      eventengine.NewWithSite(cams, rules, db, site),
 		obsCh:       make(chan eventengine.Observation, 1024),
+		posCh:       make(chan eventengine.POSEvent, 256),
 		ctlCh:       make(chan func(*eventengine.Engine), 16),
+		registers:   regs,
 		known:       known,
 		camStates:   map[string]camState{},
 		clipPending: map[string]bool{},
@@ -157,6 +173,8 @@ func (s *Server) Run(ctx context.Context) {
 			continue
 		case o := <-s.obsCh:
 			out, err = s.engine.Process(o)
+		case ev := <-s.posCh:
+			out, err = s.engine.ProcessPOS(ev)
 		case now := <-tick.C:
 			out, err = s.engine.Tick(now)
 			s.pruneClipTokens(now)
@@ -273,6 +291,30 @@ func (s *Server) handle(ctx context.Context, ev eventengine.Output) {
 			}
 		}
 		s.scheduleClip(inc.ID, ev.CameraID, inc.Start)
+	case "zone_access":
+		if err := s.DB.InsertZoneAccess(ctx, *ev.Access); err != nil {
+			s.Log.Error("save access log entry", "camera", ev.CameraID, "err", err)
+		}
+	case "traffic":
+		if err := s.DB.AddTraffic(ctx, *ev.Traffic); err != nil {
+			s.Log.Error("save traffic count", "camera", ev.CameraID, "err", err)
+		}
+	}
+}
+
+// errClass reduces an error to a short class for clients. Raw error text can
+// carry internal URLs or paths, so it goes only to the log and audit trail.
+func errClass(err error) string {
+	var ne net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
+		return "timeout"
+	case errors.As(err, &ne):
+		return "connection failed"
+	case errors.Is(err, evidence.ErrExists):
+		return "clip already stored"
+	default:
+		return "capture failed"
 	}
 }
 
@@ -293,12 +335,26 @@ func (s *Server) scheduleClip(incidentID, cameraID string, start time.Time) {
 	s.clips.Add(1)
 	go func() {
 		defer s.clips.Done()
+		defer func() { // bounded memory: forget the key once the capture is over
+			s.mu.Lock()
+			delete(s.clipPending, key)
+			s.mu.Unlock()
+		}()
+		// Evidence is captured once per incident and camera. After a restart
+		// (clipPending is in memory) a merge into an existing incident must
+		// not capture again and overwrite the stored clip.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		exists, err := s.DB.ClipExists(ctx, incidentID, cameraID)
+		cancel()
+		if err == nil && exists {
+			return
+		}
 		if err := s.captureClip(incidentID, cameraID, start.Add(-s.Cfg.ClipPre), start.Add(s.Cfg.ClipPost)); err != nil {
 			s.Log.Error("evidence clip", "incident", incidentID, "camera", cameraID, "err", err)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			s.audit(ctx, "system", "clip_failed", incidentID, map[string]any{"camera_id": cameraID, "error": err.Error()})
-			s.publishFor(ctx, incidentID, "clip_failed", map[string]any{"incident_id": incidentID, "camera_id": cameraID, "error": err.Error()})
+			s.publishFor(ctx, incidentID, "clip_failed", map[string]any{"incident_id": incidentID, "camera_id": cameraID, "error": errClass(err)})
 		}
 	}()
 }
@@ -442,6 +498,8 @@ func (s *Server) AddCamera(ctx context.Context, c eventengine.Camera) error {
 	s.mu.Unlock()
 	return nil
 }
+
+func (s *Server) knownRegister(id string) bool { return s.registers[id] }
 
 func (s *Server) knownCamera(id string) bool {
 	s.mu.RLock()

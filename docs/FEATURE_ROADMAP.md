@@ -1,50 +1,65 @@
 # Feature Roadmap
 
-**Date:** 2026-10-27 · Effort is in engineer-weeks (ew) for a team of ~4–6 (CV/ML ×2, backend ×1–2, frontend ×1, + part-time security/QA/PM). These are estimates [E].
+**Date:** 2026-11-20 · Follows the playbook rollout: **Pilot (30 days, P1 only) → Connect the data (days 30–60) → Tune & expand (days 60–90) → Prove ROI.** ✅ = done in this repository (code + automated tests on synthetic inputs; not field-validated). ☐ = not done.
 
-| Phase | Name | Duration (calendar) | Effort | Gate to next phase |
-|---|---|---|---|---|
-| 0 | Research & feasibility | 4–6 wk | ~12 ew | Legal + licensing sign-off. Data-access agreements. Site survey shows the hazards are observable |
-| 1 | Video infrastructure | 6–8 wk | ~20 ew | 72 h soak with 4 cams, 0 crashes, every fault visible in UI, benchmark report |
-| 2 | Initial detection pipeline | 10–14 wk | ~40 ew | Offline benchmark goals met on validation set for D1–D3, A1 |
-| 3 | Multi-camera intelligence | 6–8 wk | ~18 ew | Dedup accuracy ≥ 0.95 on multi-cam test set |
-| 4 | Safety & reliability (shadow mode) | 8–12 wk | ~25 ew | Shadow metrics within goals. Pen test passed. Go/no-go signed |
-| 5 | Controlled pilot | 12 wk | ~20 ew | Independent assessment. No stop conditions triggered |
-| 6 | Production readiness | 8–12 wk | ~30 ew | SOC2-style controls, fleet ops, commercial licenses verified |
-
-Total ≈ **13–18 months, ~165 ew** to a controlled multi-site deployment [E].
-
-## Phase 0: Research and feasibility
-- Deliverables: hardware inventory, licensing register signed by counsel, event taxonomy approved, camera feasibility survey at ≥1 partner facility, benchmark design, data-collection consent forms, manikin protocol, ACLab license enquiry.
-- Risks: H-01, H-02, H-40.
-- **Exit:** counsel opinion for the pilot jurisdiction. Written facility partnership. Manikin protocol approved by ethics/safety advisor.
-
-## Phase 1: Video infrastructure
-- RTSP ingest + reconnect, ring buffer, clip cutting, camera health states, file-replay RTSP simulator, Prometheus/Grafana, Postgres schema + migrations, minimal dashboard (health only).
-- **Exit:** soak test, fault-injection suite for D1/D2 passes, GPU benchmark of candidate detector/pose models on target hardware (fills COST model variables).
-
-## Phase 2: Initial detection pipeline
-- Detector + ByteTrack + RTMPose fine-tuned. Zones. Rules D3, D4, A1, C1 (review). Incident inbox + review screen. Annotation tooling (CVAT, self-hosted). Offline benchmark harness.
-- **Exit:** validation-set goals per SAFETY_VALIDATION §5.
-
-## Phase 3: Multi-camera intelligence
-- Room topology, zone projection, cross-camera correlation, dedup, synced multi-clip evidence.
-- **Exit:** dedup ≥ 0.95. No mis-merge across rooms in tests.
-
-## Phase 4: Safety & reliability
-- Shadow mode at partner site, false-alert analysis, failure injection, security testing, reviewer workflows, go/no-go.
-- Optional experiments: PoseC3D window classifier (E3), X3D verifier (E4), VLM summaries (E5).
-
-## Phase 5: Controlled pilot
-- Staff training, alert delivery (local siren + push), operational monitoring, incident feedback loop, independent assessment.
-
-## Phase 6: Production readiness
-- Deployment automation, A/B OTA updates + rollback, tenant isolation in the control plane, backup/recovery, audit/retention controls, support runbooks, commercial licensing verification for every shipped component.
-
-## Release mapping
-| Release | Contents |
+## Phase 0: Platform and restaurant rules (this repository)
+| Item | Status |
 |---|---|
-| **MVP (Pilot)** | Health monitoring (D1/D2), restricted zone (D3), infant-off-surface (A1, after shadow), review workflows, RBAC, audit, retention |
-| **R2** | Multi-camera correlation, infant hazard zone (D4), no-adult-present (D5) review, false-alert feedback, drift monitoring, on-prem air-gapped mode |
-| **R3** | Facility reports, NL metadata search, multi-facility admin, roster integration, VLM summaries if E5 passes |
-| **Research track** | Handling (B1–B3), posture anomalies (A3, C3), anomaly prioritization, respiration (E1) |
+| Edge platform: RTSP ingest, health states, incidents, encrypted clips, SSE, RBAC (staff/manager/owner/admin), hash-chained audit, retention, legal hold | ✅ |
+| Rules: after_hours_intrusion, camera_tamper, restricted_zone_entry, person_down (heuristic), long_queue, long_wait, unattended_post | ✅ |
+| POS ingest endpoint + `pos_no_sale`, `pos_refund_no_customer`; dedupe by id; `pos_ref` search | ✅ |
+| Staff inference (staff_area / staff_only), business-hours schedule | ✅ |
+| Traffic counts + peak-hour heat map (A1/A2); secure-zone access log (D5/G4) | ✅ |
+| SHADOW by default + per-rule `alerting_enabled`, audited at startup | ✅ |
+| Webhook alert delivery with retries and escalation | ✅ |
+
+## Phase 1: Pilot (days 0–30) — one site, P1 only
+| Item | Status |
+|---|---|
+| Counsel review; posted notices; signed employee acknowledgments | ☐ |
+| Site survey, VLANs, register overhead camera positioned for PCI | ☐ |
+| Zones per camera (incl. `floor` on every camera that should run person_down) | ☐ |
+| On-site staged tests (SAFETY_VALIDATION §7 phase 2) | ☐ |
+| All alert rules in SHADOW; owner reviews daily | ☐ |
+| Measure false-alert rate per rule and hours of footage review saved | ☐ |
+
+## Phase 2: Connect the data (days 30–60)
+| Item | Playbook | Status |
+|---|---|---|
+| First POS connector (one of Toast / Square / Clover) → `POST /internal/v1/pos-events` | C1, C3 | ☐ (endpoint ✅) |
+| POS feed health + clock-skew check | — | ☐ |
+| Time-clock integration; clock-in/out vs. arrival/departure | B1, B2 | ☐ |
+| Buddy-punch check (person at clock vs. punch; no face ID) | B3 | ☐ |
+| Conversion KPI (entries ÷ POS tickets) | A3 | ☐ |
+| **Daily flash** (7 am): visitors, conversion, peak hour, queue max, cash exceptions | Reports | ☐ |
+| **Weekly payroll reconciliation** (minutes both ways) | Reports | ☐ |
+
+## Phase 3: Tune & expand (days 60–90)
+| Item | Status |
+|---|---|
+| Per-rule enable decisions (SAFETY_VALIDATION §8) | ☐ (mechanism ✅) |
+| Per-site thresholds | ☐ (config ✅) |
+| **Mobile push/SMS** relay behind the webhook | ☐ |
+| P2 rules in SHADOW: walk-outs A5, staffing ratio B8, discount abuse C7, till count C8, table turns H3 | ☐ |
+| **Weekly ops scorecard** | ☐ |
+| **Multi-site dashboard** (metadata plane, one view across locations) | ☐ |
+
+## Phase 4: Prove ROI
+Track before/after at the pilot site: cash variance, shrink %, food-cost %, payroll hours paid vs. verified, chargebacks won, incidents resolved by clip; plus review hours saved. ☐
+
+## Phase 5: New models (each ships in SHADOW with its own validation)
+| Item | Playbook | Status |
+|---|---|---|
+| Fire / smoke in kitchen | F7 | ☐ |
+| PPE / hairnet / gloves; hand-wash visits | B9, B10 | ☐ |
+| Dine-and-dash (table occupancy + party exit + unpaid check) | E2 | ☐ |
+| Pose-based fall check (replace box heuristic) | F6 | ☐ |
+| Back-door object carry | D1 | ☐ |
+| Weapon visible | F5 | ☐ |
+| Fights / confrontation | F1–F4 | ☐ |
+| Natural-language search ("2:15 pm order at register 1") | H4 | ☐ (`pos_ref` search ✅) |
+| Monthly loss-prevention review | Reports | ☐ |
+| Plate/pour counting, ticket-to-pass | D2, D4, A8 | ☐ |
+
+## Not planned
+A7 repeat-visit re-ID, E4 counterfeit hotspots, F8 intoxication, G5 licence plates (see [PRODUCT_REQUIREMENTS §3](PRODUCT_REQUIREMENTS.md)). Hotel/store-only items are out of scope.

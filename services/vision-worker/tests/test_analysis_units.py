@@ -1,9 +1,13 @@
 """Unit tests for the detection pipeline pieces that need no model files:
-tracker, held state, role heuristic, pose metrics, heatmap decoding, and the
-pipeline/worker contract (schema-valid observations, degraded frames skip
-detection, failed inference reports ai_available=false)."""
+tracker, pose metrics, box normalization, NaN handling, the analysis-loop
+guard, and the pipeline/worker contract (schema-valid observations with role
+"person" and frame_size, degraded frames skip detection, failed inference
+reports ai_available=false)."""
 
+import io
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,13 +15,12 @@ import jsonschema
 import numpy as np
 import pytest
 
-from zeoatap_vision import held, roles
 from zeoatap_vision.config import CameraConfig, WorkerConfig
-from zeoatap_vision.models import ModelMissing, resolve
-from zeoatap_vision.observation import JsonlSink
-from zeoatap_vision.pipeline import PosePipeline, normalize_box, pose_metrics
+from zeoatap_vision.models import MODELS, ModelMissing, resolve
+from zeoatap_vision.observation import JsonlSink, MockDetector
+from zeoatap_vision.pipeline import PersonPipeline, normalize_box, pose_metrics
 from zeoatap_vision.tracker import ByteTracker, greedy_match, iou_matrix
-from zeoatap_vision.worker import VisionWorker
+from zeoatap_vision.worker import LOOP_FAIL_LIMIT, VisionWorker
 
 SCHEMA = json.loads((Path(__file__).parents[3] / "packages/contracts/observation.schema.json").read_text())
 
@@ -74,98 +77,9 @@ def test_tracker_drops_lost_tracks_and_ids_are_anonymous():
     assert tr.tracks == []
     tr.update(box, np.array([0.9]), 1.7)
     assert tr.tracks[0].id != first  # a returning person gets a new id
-    assert ByteTracker()._prefix != tr._prefix or True  # prefix is random per tracker/restart
+    prefixes = {ByteTracker()._prefix for _ in range(20)}
+    assert len(prefixes) > 1  # prefix is random per tracker/restart (16-bit; 20 equal draws is ~impossible)
     assert all(c in "0123456789abcdef-" for c in first)
-
-
-# ---- held ------------------------------------------------------------------
-ADULT = np.array([0.40, 0.10, 0.60, 0.95])
-
-
-def test_held_when_infant_carried_at_chest():
-    infant = np.array([0.43, 0.25, 0.57, 0.50])
-    assert held.held_geometry(infant, ADULT)
-
-
-@pytest.mark.parametrize("infant,why", [
-    (np.array([0.70, 0.25, 0.85, 0.50]), "no overlap"),
-    (np.array([0.43, 0.80, 0.57, 0.95]), "on the floor at the adult's feet"),
-    (np.array([0.41, 0.55, 0.59, 0.85]), "low, near the adult's knees"),
-    (np.array([0.40, 0.10, 0.60, 0.95]), "same size as the adult"),
-])
-def test_not_held(infant, why):
-    assert not held.held_geometry(infant, ADULT), why
-
-
-def test_held_respects_visible_wrists():
-    infant = np.array([0.43, 0.25, 0.57, 0.50])
-    k = np.zeros((17, 2))
-    s = np.zeros(17)
-    k[9] = k[10] = [0.5, 0.9]  # both hands down by the knees
-    s[9] = s[10] = 0.9
-    assert not held.held_geometry(infant, ADULT, k, s)
-    k[10] = [0.5, 0.45]  # one hand under the infant
-    assert held.held_geometry(infant, ADULT, k, s)
-    s[:] = 0.1  # wrists not visible: geometry alone decides
-    k[10] = [0.5, 0.9]
-    assert held.held_geometry(infant, ADULT, k, s)
-
-
-def test_held_hysteresis_and_adults_never_held():
-    sm = held.HeldSmoother()
-    carried = np.array([0.43, 0.25, 0.57, 0.50])
-    away = np.array([0.80, 0.70, 0.90, 0.90])
-    state = {}
-
-    def frame(box):
-        people = [{"role": "infant", "box": box, "data": state},
-                  {"role": "adult", "box": ADULT, "data": {}}]
-        held.compute_held(people, sm)
-        assert people[1]["held"] is False
-        return people[0]["held"]
-
-    assert [frame(carried) for _ in range(3)] == [False, True, True]  # on after 2 frames
-    assert frame(away) is True and frame(carried) is True  # one bad frame does not clear it
-    assert [frame(away) for _ in range(3)] == [True, True, False]  # off after 3 frames
-
-
-# ---- roles -----------------------------------------------------------------
-def body(head_w, shoulder_w, torso_len, x0=100.0, y0=100.0):
-    k = np.zeros((17, 2), np.float32)
-    s = np.full(17, 0.9, np.float32)
-    cx = x0 + 50
-    k[roles.L_EAR] = [cx - head_w / 2, y0]
-    k[roles.R_EAR] = [cx + head_w / 2, y0]
-    k[roles.L_SHO] = [cx - shoulder_w / 2, y0 + 20]
-    k[roles.R_SHO] = [cx + shoulder_w / 2, y0 + 20]
-    k[roles.L_HIP] = [cx - shoulder_w / 3, y0 + 20 + torso_len]
-    k[roles.R_HIP] = [cx + shoulder_w / 3, y0 + 20 + torso_len]
-    return k, s
-
-
-def test_role_heuristic_adult_and_infant_proportions():
-    clf = roles.ProportionRoleClassifier()
-    ak, as_ = body(head_w=15, shoulder_w=40, torso_len=50)  # adult: 0.38, 0.30
-    ik, is_ = body(head_w=11, shoulder_w=16, torso_len=17)  # infant: 0.69, 0.65
-    adult = roles.PersonView(np.array([0, 0, 60, 170.0]), ak, as_)
-    infant = roles.PersonView(np.array([0, 0, 30, 60.0]), ik, is_)
-    p_adult, p_infant = clf.infant_probability([adult, infant])
-    assert p_adult < 0.3 and p_infant > 0.7
-    # alone in view: proportions only, still separated
-    assert clf.infant_probability([adult])[0] < 0.3
-    assert clf.infant_probability([infant])[0] > 0.7
-    # no keypoints and alone: no evidence
-    assert clf.infant_probability([roles.PersonView(np.array([0, 0, 10, 10.0]))]) == [None]
-    assert "UNVALIDATED" in clf.version
-
-
-def test_role_smoother_hysteresis():
-    sm = roles.RoleSmoother()
-    d = {}
-    assert sm.update(d, None) == "adult"  # documented default without evidence
-    roles_seen = [sm.update(d, 0.95) for _ in range(5)]
-    assert roles_seen[-1] == "infant" and roles_seen[0] == "adult"  # needs a few frames
-    assert sm.update(d, 0.1) == "infant"  # one contrary frame does not flip it
 
 
 # ---- pose metrics, boxes, decoding ----------------------------------------
@@ -175,35 +89,27 @@ def test_pose_metrics_and_box_normalization():
     assert pq == pytest.approx(0.9) and vis == pytest.approx(10 / 17)
     assert pose_metrics(None) == (0.0, 0.0) and pose_metrics(np.zeros(17)) == (0.0, 0.0)
     assert normalize_box(np.array([-5, 10, 700, 360]), 640, 360) == [0.0, 0.0278, 1.0, 1.0]
-
-
-def test_heatmap_decoding_softmax_and_gaussian():
-    from zeoatap_vision.inference import decode_heatmaps
-
-    hm = np.zeros((1, 2, 8, 8), np.float32)
-    hm[0, 0, 3, 5] = 0.7
-    hm[0, 0, 3, 6] = 0.3  # right neighbour higher -> +0.25 x
-    hm[0, 1, 6, 2] = 1.0
-    locs, conf = decode_heatmaps(hm, softmax_output=True)
-    assert locs[0, 0].tolist() == [5.25, 3.0] and conf[0, 0] == pytest.approx(1.0)
-    _, conf_g = decode_heatmaps(hm * 0.5, softmax_output=False)
-    assert conf_g[0, 0] == pytest.approx(0.35)
+    assert normalize_box(np.array([np.nan, 10, 700, 360]), 640, 360) is None
 
 
 # ---- pipeline + worker contract ------------------------------------------
 class FakeDetector:
-    """Stands in for YOLOX: an adult and a smaller infant carried at the chest."""
+    """Stands in for YOLOX: two people, one standing, one lying (wide box)."""
     provider = "fake"
 
     def __init__(self):
         self.calls = 0
         self.fail = False
+        self.nan = False
 
     def __call__(self, rgb):
         self.calls += 1
         if self.fail:
             raise RuntimeError("inference blew up")
-        return (np.array([[256, 36, 384, 342], [275, 90, 365, 180]], np.float32), np.array([0.92, 0.81], np.float32))
+        boxes = np.array([[256, 36, 384, 342], [400, 250, 600, 320]], np.float32)
+        if self.nan:
+            boxes[1, 0] = np.nan
+        return boxes, np.array([0.92, 0.81], np.float32)
 
 
 class FakePose:
@@ -215,17 +121,9 @@ class FakePose:
         return k, np.full((n, 17), 0.8, np.float32)
 
 
-class FixedRoles:
-    version = "test-fixed"
-
-    def infant_probability(self, people):
-        sizes = [(p.box[3] - p.box[1]) for p in people]
-        return [0.0 if s == max(sizes) else 1.0 for s in sizes]
-
-
-def make_pipeline():
+def make_pipeline(pose=True):
     det = FakeDetector()
-    return PosePipeline(components=(det, FakePose(), FakePose()), role_classifier=FixedRoles()), det
+    return PersonPipeline(components=(det, FakePose() if pose else None)), det
 
 
 def frame(ts, cam="cam1", rgb=True, value=None):
@@ -235,26 +133,137 @@ def frame(ts, cam="cam1", rgb=True, value=None):
                            rgb=np.zeros((360, 640, 3), np.uint8) if rgb else None)
 
 
-def test_pipeline_observations_are_schema_valid_with_held_infant():
-    pipe, _ = make_pipeline()
-    vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), pipe, JsonlSink())
+def worker(det):
+    return VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), det, JsonlSink())
+
+
+@pytest.mark.parametrize("pose", [True, False])
+def test_pipeline_observations_are_schema_valid_people(pose):
+    pipe, _ = make_pipeline(pose)
+    vw = worker(pipe)
     assert vw.cameras["cam1"].analysis_width == 640  # RGB frames requested from the camera
     obs = [vw.process(frame(1000 + i * 0.2)) for i in range(8)]
     for o in obs:
         jsonschema.validate(o, SCHEMA)
-        assert o["source"] == "zeoatap-pose-p0" and o["ai_available"] is True
+        assert o["source"] == "zeoatap-person-p1" and o["ai_available"] is True
+        assert o["frame_size"] == [640, 360]
         assert "UNVALIDATED" in o["model_versions"]["validation"]
-    last = {t["role"]: t for t in obs[-1]["tracks"]}
-    assert set(last) == {"adult", "infant"}
-    assert last["infant"]["held"] is True and last["adult"]["held"] is False
-    assert all(0 <= v <= 1 for v in last["adult"]["box"])
-    assert last["adult"]["box"] == [0.4, 0.1, 0.6, 0.95]
-    assert last["infant"]["pose_quality"] == pytest.approx(0.8)
+        assert ("pose" in o["model_versions"]) is pose
+    tracks = sorted(obs[-1]["tracks"], key=lambda t: t["box"][0])
+    assert len(tracks) == 2
+    assert all(t["role"] == "person" and "held" not in t for t in tracks)
+    assert tracks[0]["box"] == [0.4, 0.1, 0.6, 0.95]
+    if pose:
+        assert tracks[0]["pose_quality"] == pytest.approx(0.8) and tracks[0]["visibility"] == 1.0
+    else:
+        assert "pose_quality" not in tracks[0]
+
+
+def test_nan_detections_never_reach_the_json_stream():
+    pipe, det = make_pipeline()
+    out = io.StringIO()
+    vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), pipe, JsonlSink(out))
+    det.nan = True
+    for i in range(5):
+        vw._analyze_one(frame(1000 + i * 0.2))
+    lines = out.getvalue().splitlines()
+    assert len(lines) == 5
+    for line in lines:
+        o = json.loads(line, parse_constant=lambda c: pytest.fail(f"non-JSON constant {c}"))
+        jsonschema.validate(o, SCHEMA)
+    assert len(json.loads(lines[-1])["tracks"]) == 1  # the NaN person is dropped, the other kept
+    assert pipe.invalid_dropped_total >= 5
+    # a NaN that slips past the pipeline is dropped at the worker, and a NaN
+    # anywhere else makes the sink drop the line rather than write invalid JSON
+    from zeoatap_vision.observation import sanitize_tracks
+    kept, bad = sanitize_tracks([{"id": "a", "role": "person", "score": float("nan"), "box": [0, 0, 1, 1]},
+                                 {"id": "b", "role": "person", "score": 0.5, "box": [0, 0, 1, float("inf")]},
+                                 {"id": "c", "role": "person", "score": 0.5, "box": [0, 0, 1, 1]}])
+    assert [t["id"] for t in kept] == ["c"] and bad == 2
+    sink = JsonlSink(io.StringIO())
+    sink.emit({"camera_id": "x", "v": float("nan")})
+    assert sink.invalid_total == 1 and sink.written == 0
+
+
+def test_mock_detector_emits_plausible_schema_valid_people():
+    vw = worker(MockDetector())
+    seen = set()
+    for i in range(300):
+        o = vw.process(frame(1000 + i * 0.2, rgb=False))
+        jsonschema.validate(o, SCHEMA)
+        assert o["source"] == "MOCK"
+        for t in o["tracks"]:
+            assert t["role"] == "person" and t["box"][0] < t["box"][2] and t["box"][1] < t["box"][3]
+            seen.add(t["id"])
+    assert seen  # people do appear
+    assert MockDetector().analyze("cam-counter", 5.0) == MockDetector().analyze("cam-counter", 5.0)
+
+
+def test_analysis_loop_survives_exceptions_and_reports_unhealthy():
+    class BrokenSink:
+        written = 0
+        fail = True
+
+        def emit(self, obs):
+            if self.fail:
+                raise RuntimeError("disk full")
+            self.written += 1
+
+    sink = BrokenSink()
+    vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), MockDetector(), sink)
+    cam = vw.cameras["cam1"]
+    cam.state = cam.state.__class__.STREAMING  # pretend the camera is up
+    assert vw.ready()
+    vw._analysis.start()  # only the analysis thread; no real camera
+    try:
+        for i in range(LOOP_FAIL_LIMIT + 2):
+            cam._offer(SimpleNamespace(camera_id="cam1", wall_ts=1000 + i * 0.2,
+                                       gray=frame(i).gray, rgb=None, frame_size=(1280, 720)))
+        end = time.time() + 5
+        while vw.loop_errors_total < LOOP_FAIL_LIMIT + 2 and time.time() < end:
+            time.sleep(0.01)
+        assert vw.loop_errors_total == LOOP_FAIL_LIMIT + 2
+        assert vw._analysis.is_alive()  # the thread did not die
+        assert not vw.ready() and vw.status()["ai_available"] is False
+        assert "disk full" in vw.status()["analysis_loop_last_error"]
+        sink.fail = False
+        cam._offer(SimpleNamespace(camera_id="cam1", wall_ts=1010.0, gray=frame(9).gray, rgb=None,
+                                   frame_size=(1280, 720)))
+        end = time.time() + 5
+        while sink.written == 0 and time.time() < end:
+            time.sleep(0.01)
+        assert sink.written == 1 and vw.ready()  # one success clears it
+    finally:
+        vw._stop.set()
+        vw._analysis.join(5)
+
+
+def test_pipeline_status_is_safe_while_cameras_are_added():
+    pipe, _ = make_pipeline(pose=False)
+    stop = threading.Event()
+    errors = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                pipe.status()
+            except Exception as e:  # pragma: no cover - the bug this guards against
+                errors.append(e)
+
+    t = threading.Thread(target=reader)
+    t.start()
+    try:
+        for i in range(300):
+            pipe.analyze(f"cam{i}", 1.0, None, np.zeros((36, 64, 3), np.uint8))
+    finally:
+        stop.set()
+        t.join()
+    assert not errors and len(pipe.status()["active_tracks"]) == 300
 
 
 def test_degraded_frames_do_not_run_detection_and_failures_are_explicit():
     pipe, det = make_pipeline()
-    vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), pipe, JsonlSink())
+    vw = worker(pipe)
     # black for > 3 s -> degraded, detector must not run
     for i in range(25):
         o = vw.process(frame(i * 0.2, value=0))
@@ -263,7 +272,7 @@ def test_degraded_frames_do_not_run_detection_and_failures_are_explicit():
     vw.process(frame(5.2, value=0))
     assert det.calls == calls and o["tracks"] == []
     # inference error: that frame says ai_available=false, never "nobody there"
-    vw2 = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), pipe, JsonlSink())
+    vw2 = worker(pipe)
     det.fail = True
     o = vw2.process(frame(100.0))
     jsonschema.validate(o, SCHEMA)
@@ -285,6 +294,4 @@ def test_resolve_refuses_missing_or_tampered_models(tmp_path):
     (tmp_path / "rtmpose-s-body7.onnx").write_bytes(b"not the model")
     with pytest.raises(ModelMissing, match="sha256"):
         resolve("rtmpose-s-body7", tmp_path)
-    (tmp_path / "fidip-mobile.onnx").write_bytes(b"x")
-    with pytest.raises(ModelMissing, match="export"):
-        resolve("fidip-mobile", tmp_path)
+    assert not any(s.kind not in ("detector", "pose") for s in MODELS.values())

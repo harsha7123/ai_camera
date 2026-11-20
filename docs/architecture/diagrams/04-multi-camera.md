@@ -1,18 +1,21 @@
 # 04-multi-camera
 
-Source of truth: SYSTEM_ARCHITECTURE.md (kept in sync).
+Source of truth: SYSTEM_ARCHITECTURE.md §7 (kept in sync).
 
 ```mermaid
 flowchart LR
-  subgraph Room1["Room 'Infants A' (topology config)"]
-    C1[Cam 1: crib row] --- C2[Cam 2: floor area]
-    C2 --- C3[Cam 3: door]
+  subgraph Counter["Room: Front counter"]
+    C1["cam-counter: Register 1 overhead<br/>(priority, 15 fps)"]
+    C2["cam-dining: Dining 360<br/>(sees the counter edge)"]
   end
-  C1 --> T1[Tracks cam1 - local ids]
-  C2 --> T2[Tracks cam2]
-  C3 --> T3[Tracks cam3]
-  T1 & T2 & T3 --> Z[Zone projection<br/>each camera's zones mapped to room-level zones<br/>e.g. crib-3, floor, exit]
-  Z --> CORR[Room-level correlator<br/>events keyed by room + zone + time]
-  CORR --> DEDUP[Dedup: same family, overlapping window,<br/>same room-zone ⇒ one incident, many evidence clips]
-  DEDUP --> INC[(Incident with evidence from cam1 + cam2)]
+  C1 --> T1["Tracks cam-counter (local ids)"]
+  C2 --> T2["Tracks cam-dining (local ids)"]
+  T1 --> Z["Zone projection: camera zones → room zones<br/>e.g. register-1-front, counter-queue"]
+  T2 --> Z
+  POS["POS event reg1 → room zone register-1"] --> CORR
+  Z --> CORR["Correlator keyed by room zone + event type + time"]
+  CORR --> DEDUP["Same room zone, same type, overlapping window<br/>= one incident, one clip per camera"]
+  DEDUP --> INC[("Incident with clips from both cameras")]
 ```
+
+No identity is carried between cameras: no face, no appearance embedding (ADR-003). Two tracks are never asserted to be the same person.

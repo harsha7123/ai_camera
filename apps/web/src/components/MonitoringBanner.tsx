@@ -24,7 +24,7 @@ function roomProblem(r: OverviewRoom, now: number): Problem | null {
 
 export function serviceProblems(o: Overview): Problem[] {
   const out: Problem[] = [];
-  if (o.services.engine !== "ok") out.push({ key: "engine", text: `Event engine error${o.services.engine_error ? `: ${o.services.engine_error}` : ""} — no automated prompts`, severe: true });
+  if (o.services.engine !== "ok") out.push({ key: "engine", text: `Event engine error${o.services.engine_error ? `: ${o.services.engine_error}` : ""} — no automated alerts`, severe: true });
   if (o.services.database !== "ok") out.push({ key: "db", text: "Database unavailable — incident history delayed", severe: true });
   if (o.services.evidence !== "ok") out.push({ key: "evidence", text: "Evidence storage unavailable — clips may not be saved", severe: false });
   if (o.alerts_health.failed > 0) out.push({ key: "afail", text: `Alert delivery failing (${o.alerts_health.failed})`, severe: true });
@@ -32,8 +32,20 @@ export function serviceProblems(o: Overview): Problem[] {
   return out;
 }
 
-/** Full-width, non-dismissable. Shown on every signed-in page while any condition persists. */
+/**
+ * Full-width, non-dismissable. Shown on every signed-in page while any condition persists.
+ * The polite live region is always in the DOM (screen readers ignore live regions
+ * that are inserted together with their content); the banner renders inside it.
+ */
 export function MonitoringBanner() {
+  return (
+    <div className="banner-region" aria-live="polite" data-testid="banner-region">
+      <BannerContent />
+    </div>
+  );
+}
+
+function BannerContent() {
   const { overview, overviewAt, live, overviewError } = useApp();
   const now = useNow();
   const stale = isStale(overviewAt, live.status, now);
@@ -72,15 +84,15 @@ export function MonitoringBanner() {
       <div className="banner-body">
         <p className="banner-title">
           {title}
-          {rooms.length ? <span className="banner-count"> · {rooms.length} {rooms.length === 1 ? "room" : "rooms"} affected</span> : null}
+          {rooms.length ? <span className="banner-count"> · {rooms.length} {rooms.length === 1 ? "area" : "areas"} affected</span> : null}
         </p>
-        <ul aria-live="polite">
+        <ul>
           {stale ? (
             <li data-testid="banner-stale">
               {live.status !== "open"
                 ? "Live updates disconnected — new alerts may not appear on this screen. Reconnecting…"
                 : `No status update for ${age}. Check this device's network connection.`}
-              {" "}Room states below are the last known values.
+              {" "}Area states below are the last known values.
             </li>
           ) : null}
           {rooms.map((p) => (

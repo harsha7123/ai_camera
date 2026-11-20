@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-// Store persists incidents. The Postgres implementation (infra/migrations)
+// Store persists incidents. The Postgres implementation (internal/store)
 // enforces idempotency with a unique index on idempotency_key.
 type Store interface {
 	InsertIfAbsent(inc *Incident) (stored *Incident, created bool, err error)
 	Update(inc *Incident) error
 	Get(id string) (*Incident, error)
-	// FindMergeable returns an open incident in the same room zone and event
-	// family whose window is within gap of start, or nil.
-	FindMergeable(roomID, roomZone, family string, start time.Time, gap time.Duration) (*Incident, error)
+	// FindMergeable returns an unresolved incident of the same event type in
+	// the same room zone whose window is within gap of start, or nil.
+	FindMergeable(roomID, roomZone, eventType string, start time.Time, gap time.Duration) (*Incident, error)
 	List() ([]*Incident, error)
 }
 
@@ -54,11 +54,11 @@ func (s *MemoryStore) Get(id string) (*Incident, error) {
 	return s.byID[id], nil
 }
 
-func (s *MemoryStore) FindMergeable(roomID, roomZone, family string, start time.Time, gap time.Duration) (*Incident, error) {
+func (s *MemoryStore) FindMergeable(roomID, roomZone, eventType string, start time.Time, gap time.Duration) (*Incident, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, inc := range s.byID {
-		if inc.RoomID == roomID && inc.RoomZone == roomZone && inc.Family == family &&
+		if inc.RoomID == roomID && inc.RoomZone == roomZone && inc.EventType == eventType &&
 			!start.Before(inc.Start.Add(-gap)) && !start.After(inc.End.Add(gap)) {
 			return inc, nil
 		}

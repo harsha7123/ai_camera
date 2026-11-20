@@ -17,7 +17,11 @@ type Name =
   | "unplug"
   | "lock"
   | "arrow-left"
-  | "refresh";
+  | "refresh"
+  | "chart"
+  | "key"
+  | "store"
+  | "search";
 
 const PATHS: Record<Name, React.ReactNode> = {
   check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
@@ -127,6 +131,31 @@ const PATHS: Record<Name, React.ReactNode> = {
     </>
   ),
   "arrow-left": <path d="M19 12H5M11 6l-6 6 6 6" />,
+  chart: (
+    <>
+      <path d="M4 20h16" />
+      <path d="M7 16v-5M12 16V6M17 16v-8" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="8" cy="12" r="3.5" />
+      <path d="M11.5 12H20M17 12v3M20 12v2" />
+    </>
+  ),
+  store: (
+    <>
+      <path d="M4 9l1.5-4.5h13L20 9" />
+      <path d="M4 9h16v1.5a2.7 2.7 0 0 1-5.3 0 2.7 2.7 0 0 1-5.4 0A2.7 2.7 0 0 1 4 10.5z" />
+      <path d="M5.5 13v7h13v-7M10 20v-4h4v4" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="M15 15l5 5" />
+    </>
+  ),
   refresh: (
     <>
       <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" />

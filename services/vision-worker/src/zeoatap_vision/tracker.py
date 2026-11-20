@@ -4,11 +4,11 @@ here without external dependencies.
 - Constant-velocity Kalman filter on (cx, cy, aspect, h), as in ByteTrack.
 - Two-stage association: high-score detections first against all tracks, then
   low-score detections against the tracks still unmatched (this is what lets
-  ByteTrack keep partially occluded people, e.g. an infant held against an
-  adult, whose detection score drops).
+  ByteTrack keep partially occluded people, e.g. a guest behind a counter or
+  a server passing in front of a table, whose detection score drops).
 - Matching is greedy on IoU (highest first) instead of the Hungarian
-  algorithm: identical for the few, well-separated people in a nursery room,
-  and avoids a SciPy/lap dependency.
+  algorithm: close to it for the moderate crowd sizes of a restaurant floor,
+  and avoids a SciPy/lap dependency. Not evaluated on dense crowds.
 - IDs are short-lived and anonymous: a random per-tracker prefix plus a
   counter ("k3f9-7"). They never persist across restarts and are never linked
   to identity (ADR-003).
@@ -107,7 +107,7 @@ class Track:
     hits: int = 1
     misses: int = 0
     det_index: int | None = None  # index into the current frame's detections, None if coasting
-    data: dict = field(default_factory=dict)  # per-track state for later stages (role, held)
+    data: dict = field(default_factory=dict)  # per-track state for later stages
 
     @property
     def box(self) -> np.ndarray:

@@ -1,53 +1,45 @@
 # Open Questions
 
-**Date:** 2026-10-27. Each item has a provisional assumption so work isn't blocked.
+**Date:** 2026-11-20. Each item has a provisional assumption so work is not blocked.
 
 ## Business & scope
 | ID | Question | Provisional assumption | Blocking? |
 |---|---|---|---|
-| OQ-B1 | Which country/state is the first deployment? | US, one state, decided in Phase 0 | Blocks pilot, not design |
-| OQ-B2 | Is there a partner facility willing to run shadow mode? | Yes, to be recruited | Blocks Phase 4 |
-| OQ-B3 | Target customer: daycare centres, NICUs or home? | Licensed daycare centres (infant rooms) | No |
-| OQ-B4 | Pricing model (hardware + subscription?) | Subscription incl. appliance | No |
+| OQ-B1 | Which site and state is the pilot? | One restaurant; state per owner (playbook names PA, WV, NJ properties) | Blocks pilot |
+| OQ-B2 | QSR, full-service or bar first? | Full-service restaurant with 1–3 registers | No |
+| OQ-B3 | Pricing (appliance + subscription?) | Subscription incl. appliance | No |
+| OQ-B4 | Are hotel/store sites in scope later? | No; out of scope for this product | No |
+| OQ-B5 | **Which POS (Toast, Square, Clover, other) and what API/partner access?** | One vendor first; local export as fallback | Blocks POS rules in the field |
+| OQ-B6 | Which time clock (often part of the POS)? | Same vendor as POS | Blocks B1–B3 |
 
 ## Hardware & environment
 | ID | Question | Assumption | Blocking? |
 |---|---|---|---|
-| OQ-H1 | What cameras/NVRs exist at pilot sites (make, resolution, codec, fps, IR, mounting)? | 1080p H.264/H.265 PoE, IR, ceiling-corner mounts | Blocks Phase 1 site tests |
-| OQ-H2 | Which NVR brands need support? | Hikvision, Dahua, Axis, Uniview, Reolink | No |
-| OQ-H3 | Jetson vs. discrete GPU for small sites? | Discrete x86 for pilot | No |
-| OQ-H4 | Exact GPU SKU, and its NVDEC throughput limits? | ≥16 GB VRAM discrete GPU. Inference latency is measured on an RTX PRO 4500 Blackwell ([BENCHMARK_RESULTS](BENCHMARK_RESULTS.md)); re-run on the chosen SKU | Blocks capacity claims |
-| OQ-H5 | Is a GPU available for development? | **Partly resolved (2026-10-31):** a cloud GPU (AWS g7.4xlarge) was used for the inference benchmark. A dev workstation is still needed for day-to-day work | No |
+| OQ-H1 | Cameras/NVR at the pilot (make, codec, fisheye vs. fixed, overhead at registers?) | Existing 1080p PoE, one 360 dome, no register overhead yet | Blocks install |
+| OQ-H2 | Can the network be split into camera / POS / guest VLANs? | Yes, with installer help | Blocks install |
+| OQ-H4 | Edge GPU SKU and its decode limits | ≥ 8–16 GB discrete NVIDIA GPU; re-run benchmark on it | Blocks capacity claims |
 
 ## Legal & licensing
 | ID | Question | Assumption |
 |---|---|---|
-| OQ-L1 | Will ACLab (Northeastern) license FiDIP/SyRIP/InfAct commercially? | No, so plan without them |
-| OQ-L2 | Applicable childcare camera laws in the pilot jurisdiction? | Video allowed with notice. No audio |
-| OQ-L3 | May we commercially ship weights pretrained on COCO/Kinetics/Objects365? | Uncertain, so budget for retraining on licensed data |
-| OQ-L4 | NVIDIA TensorRT/DeepStream redistribution terms for an appliance? | Permitted under NVIDIA SLA, to be confirmed |
-| OQ-L5 | ICVD license and commercial availability? | Unknown. Enquire with authors (Bogdanov & Green) |
-| OQ-L6 | Are body keypoints "biometric" under BIPA/CUBI/CPRA/GDPR? | Treat as sensitive. Never persist outside incidents |
-| OQ-L7 | Mandatory-reporting interplay: what must the facility do when a reviewer sees a concern? | Facility's existing safeguarding policy applies. We provide evidence export |
-| OQ-L8 | Parent consent model: opt-in vs. notice? Per child or per room? | Written notice + opt-in for any research use |
-| OQ-L10 | Which FFmpeg build do the PyAV wheels bundle (LGPL-only or with GPL codecs)? Does the appliance need its own LGPL FFmpeg build? | Assume an LGPL-only build is required; verify before shipping |
-| OQ-L9 | Is a patent freedom-to-operate review needed (infant posture patent US 20240193809)? | Yes, before productizing posture detection |
-
-## Research references
-| ID | Question |
-|---|---|
-| OQ-R1 | Exact URL of the "DAÏO fall-detection implementation". Not found by search |
-| OQ-R2 | Exact URL of "SentinelCV". Not found by search |
-| OQ-R3 | InfAct / InfActPrimitive repo license (README not retrievable) |
-| OQ-R4 | DSANet code release |
+| OQ-L1 | State-by-state notice wording (NY § 52-c reach to video, CT, DE) | Written notice + signed acknowledgment everywhere |
+| OQ-L2 | Is anonymous person detection/tracking a "biometric identifier" anywhere we deploy? Pose keypoints? | No for boxes; keypoints treated as sensitive, not persisted |
+| OQ-L3 | May we commercially use weights trained on COCO, Human-Art, Body7? | Uncertain; budget for fine-tuning on own data |
+| OQ-L4 | TensorRT/DeepStream redistribution on an appliance | Permitted under NVIDIA terms, to confirm |
+| OQ-L10 | PyAV wheels' FFmpeg build (LGPL-only?) | Ship our own LGPL build if needed |
+| OQ-L11 | Union/CBA obligations at pilot sites | Ask before install |
+| OQ-L12 | Retention period per state and litigation-hold scope for open matters | 30 days default; holds per counsel |
+| OQ-L13 | PCI scope: does footage of payment areas bring the appliance into scope? | No card data in system; camera positioned to avoid PAN/PIN; confirm with QSA |
+| OQ-L14 | CCPA/CPRA applicability (thresholds) for California sites | Provide notice regardless |
 
 ## Product
 | ID | Question | Assumption |
 |---|---|---|
-| OQ-P1 | Which rooms/hazards matter most to facilities? | Changing tables, cribs, exits, kitchen doors |
-| OQ-P2 | Is live viewing wanted, or is it a privacy liability? | Optional, off by default, leads/reviewers only |
-| OQ-P3 | What false-alert rate will staff tolerate? | ≤ ~1 high-priority false alert/facility/day |
-| OQ-P4 | Alert channels: wall tablet, siren, phone push, pager? | Wall tablet + local chime + push to leads |
-| OQ-P5 | Escalation chain and T_ack per facility? | 60 s to the room lead, then 120 s to the director |
-| OQ-P7 | Should dashboard status polling keep a session alive (wall tablets) or should idle staff be signed out after 15 min? | Recommend: polling doesn't extend sessions; add a dedicated always-on wall-display role later |
-| OQ-P6 | Sleep schedules available for C1 rules? | Entered per room by admin |
+| OQ-P1 | Which P1 rules does the owner want alerting first? | Tamper, after-hours, refund-without-customer |
+| OQ-P2 | Live view wanted? | No (privacy liability); clips only |
+| OQ-P3 | **How many false alerts per day will a manager tolerate (T)?** | 2 per site per day (used in SAFETY_VALIDATION §6) |
+| OQ-P4 | Alert channels | Dashboard + phone push/SMS via relay |
+| OQ-P5 | Escalation chain and ack timeout | 60 s to manager on duty, then owner |
+| OQ-P6 | Review budget per shift for review-policy items | ≤ 10 |
+| OQ-P7 | Clip length for POS exceptions (playbook 10–20 s) | Configure per rule |
+| OQ-P8 | Should staff crossings be excluded from traffic counts? | Not yet; separate staff entrance where possible |

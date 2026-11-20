@@ -1,16 +1,18 @@
 # GPU Benchmark Results (Phase 1, task 1.9)
 
+> **Restaurant pivot note (2026-11-20):** these measurements are of generic person-detector and pose-model speed, so they remain valid for Zeoatap Restaurant Watchdog. Infant-specific models were removed from the product and were never part of this benchmark.
+
 **Date:** 2026-10-31 · **Harness:** [`services/vision-worker/benchmark/`](../services/vision-worker/benchmark/) · **Raw data:** [`results/results.jsonl`](../services/vision-worker/benchmark/results/results.jsonl)
 
 > ⚠️ **These numbers measure inference SPEED only. They say nothing about detection or pose ACCURACY.**
 > The models are public COCO/Body7-pretrained weights, not trained or validated Zeoatap models. Inputs were seeded
-> random tensors: no images, no video and no footage of any person (and none of children) were used.
+> random tensors: no images, no video and no footage of any person were used.
 
 ## Summary
 
-- **Fastest backend:** TensorRT FP16 is 2–5× faster than ONNX Runtime CUDA FP32 for every model. Production sizing should assume TensorRT, which is what SYSTEM_ARCHITECTURE already specifies.
+- **Fastest backend:** TensorRT FP16 is 2–5× faster than ONNX Runtime CUDA FP32 for every model. Production sizing should assume TensorRT; note that the vision-worker does not use TensorRT yet (ADR-005), so today's real throughput is closer to the ORT rows.
 - **Pose is cheap. Detector input size dominates.** RTMPose-s/m on TensorRT costs 0.06–0.11 ms per person crop at batch 8. Going from a 640 to a 1280 detector input costs about 4–5× more.
-- **Cameras per GPU** (this GPU, TensorRT FP16, 3 persons/frame, 60% utilization ceiling, 50% of cameras at 15 fps and the rest at 5 fps, so 10 fps average):
+- **Cameras per GPU** (this GPU, TensorRT FP16, 3 persons/frame, 60% utilization ceiling, 50% of cameras at 15 fps and the rest at 5 fps, so 10 fps average; a restaurant usually has fewer `priority` register cameras, so its average is lower and capacity higher):
 
   | Pipeline | Cameras per GPU |
   |---|---|
@@ -42,7 +44,7 @@
 
 ## Models and licenses
 
-All models below are on the commercially-safe (code) list in [LICENSING_REGISTER](LICENSING_REGISTER.md). Every license was re-checked at download time. Pretrained **weights** keep the register's ⚠️ status (training-data provenance, OQ-L3) and must be replaced by our own fine-tunes before product use (AI_MODEL_STRATEGY §10). sha256 hashes are in [`results/models_manifest.json`](../services/vision-worker/benchmark/results/models_manifest.json).
+All models below are on the commercially-safe (code) list in [LICENSING_REGISTER](LICENSING_REGISTER.md). Every license was re-checked at download time. Pretrained **weights** keep the register's ⚠️ status (training-data provenance, OQ-L3) and must be cleared or replaced by our own fine-tunes before product use (AI_MODEL_STRATEGY §6). sha256 hashes are in [`results/models_manifest.json`](../services/vision-worker/benchmark/results/models_manifest.json).
 
 | Model | Role / input | Code license (checked) | Weights | Source / version |
 |---|---|---|---|---|
@@ -51,7 +53,7 @@ All models below are on the commercially-safe (code) list in [LICENSING_REGISTER
 | RTMPose-s, RTMPose-m | top-down pose, 256×192 crop | Apache-2.0 (open-mmlab/mmpose LICENSE) | Body7 ⚠️ | `rtmpose-{s,m}_simcc-body7_pt-body7_420e-256x192` ONNX SDK, via rtmlib 0.0.16 (Apache-2.0) |
 | RTMO-s, RTMO-m | one-stage pose, 640² frame | Apache-2.0 (mmpose) | Body7 ⚠️ | `rtmo-{s,m}_…_body7-640x640` ONNX SDK, via rtmlib 0.0.16 |
 
-Not used (excluded by the register): Ultralytics YOLO, BoxMOT, VideoMAE, Sapiens, FiDIP and any non-commercial or AGPL model.
+Not used (excluded by the register): Ultralytics YOLO, BoxMOT, VideoMAE, Sapiens and any non-commercial or AGPL model.
 
 ## Results
 
@@ -246,7 +248,7 @@ Per-item = batch latency / batch size (detector & RTMO: per frame; RTMPose: per 
 ## Capacity math, shown in full
 
 Formulas from [COST_AND_DEPLOYMENT §2](COST_AND_DEPLOYMENT.md#2-formulas): `F = N × ((1−p_hi)·f_base + p_hi·f_hi)`, `G = F × (t_det + P × t_pose)`, `GPUs = ceil(G / (1000 × U))`.
-Inputs: P = 3, U = 0.6, f_base = 5, f_hi = 15, p_hi = 0.5, so each camera averages 10 analyzed fps. The t values are the TensorRT FP16 per-item medians at batch 8. Batch 8 across cameras stays inside the 50 ms batching cap (COST_AND_DEPLOYMENT §5) for every TensorRT config. t_win = 0, because there is no window classifier in P0. For RTMO, pose cost is per frame (all persons at once), so `G = F × (t_det + t_rtmo)`.
+Inputs: P = 3, U = 0.6, f_base = 5, f_hi = 15, p_hi = 0.5, so each camera averages 10 analyzed fps. The t values are the TensorRT FP16 per-item medians at batch 8. Batch 8 across cameras stays inside a 50 ms batching cap [E] for every TensorRT config. t_win = 0, because there is no window classifier. For RTMO, pose cost is per frame (all persons at once), so `G = F × (t_det + t_rtmo)`.
 **Cameras per GPU** = `floor(1000 × U / (10 × (t_det + P × t_pose)))`.
 
 **YOLOX-M 640 + RTMPose-m:** t_det = 0.960 ms, t_pose = 0.112 ms, so per frame = 0.960 + 3 × 0.112 = 1.297 ms. Cameras per GPU = floor(600 / 12.97) = **46**.
@@ -265,7 +267,7 @@ Inputs: P = 3, U = 0.6, f_base = 5, f_hi = 15, p_hi = 0.5, so each camera averag
 | 16 | 160 | 195 ms/s | 1 |
 | 64 | 640 | 782 ms/s | **2** |
 
-**YOLOX-S 1280 + RTMPose-s** (higher resolution for small infants in frame): per frame = 1.853 + 3 × 0.061 = 2.036 ms. Cameras per GPU = floor(600 / 20.36) = **29**.
+**YOLOX-S 1280 + RTMPose-s** (higher resolution, e.g. for small or distant people in a wide dining-room view): per frame = 1.853 + 3 × 0.061 = 2.036 ms. Cameras per GPU = floor(600 / 20.36) = **29**.
 
 | N | F | G | GPUs |
 |---|---|---|---|
@@ -301,4 +303,15 @@ The capacity table above lists every detector × pose combination for both backe
 - **Synthetic inputs.** Detector and pose latency does not depend on content here because NMS is outside the graph. RTMO's in-graph post-processing may vary with person count.
 - **ORT vs TRT compares FP32 with FP16.** The speed-up figure includes the precision change.
 - **ORT at 1280, batch 8** takes 120 ms per batch, which breaks the 50 ms batching cap. ORT-FP32 capacity rows at 1280 are therefore optimistic. Use TensorRT.
-- **GPU memory** is NVML's per-process figure: 270–810 MiB per model, including CUDA context and workspace. All models together fit easily in 16 GB, so the ≥16 GB VRAM requirement is driven by the planned VLM, not by detection and pose.
+- **GPU memory** is NVML's per-process figure: 270–810 MiB per model, including CUDA context and workspace. All models together fit easily in 16 GB; a larger VRAM budget is only needed for a later VLM (natural-language search, ADR-007).
+
+## Restaurant capacity (what these numbers mean for a site)
+
+| Site | Cameras (priority) | Analysed fps F | GPU time, YOLOX-M 640 TRT FP16, detector only | Share of one GPU at U = 0.6 |
+|---|---|---|---|---|
+| Small QSR | 6 (2) | 50 | 50 × 0.960 = 48 ms/s | 8% |
+| Full-service | 12 (3) | 90 | 90 × 0.960 = 86 ms/s | 14% |
+| Large / food hall | 16 (4) | 120 | 120 × 0.960 = 115 ms/s | 19% |
+
+With pose added (P = 3, RTMPose-m) multiply by 1.297/0.960 ≈ 1.35. **These are upper bounds on capacity:** the vision-worker currently runs ONNX Runtime without TensorRT FP16 or cross-camera batching (3.3–3.9× slower per frame for YOLOX-M 640 per the tables above), and decode, tracking and CPU are not included. Even at the slower ORT FP32 batch-1 latency (3.765 ms), a 16-camera site needs 120 × 3.765 = 452 ms/s, i.e. one GPU. Re-measure end to end on the chosen edge SKU (OQ-H4) before quoting capacity to a customer.
+

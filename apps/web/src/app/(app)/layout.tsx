@@ -14,18 +14,25 @@ export default function SignedInLayout({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // `returnHere`: come back to this page after signing in. True when the session
+  // expired, or when an unauthenticated visitor followed a deep link (an alert
+  // link to an incident). Never for a normal sign-out: on a shared device the
+  // next person starts at the overview.
   const toLogin = useCallback(
-    (expired: boolean) => {
+    (expired: boolean, returnHere: boolean = expired) => {
       markSignedIn(false);
-      const here = window.location.pathname + window.location.search;
       const params = new URLSearchParams();
       if (expired) params.set("expired", "1");
-      if (here && here !== "/" && !here.startsWith("/login")) params.set("next", here);
+      if (returnHere) {
+        const here = window.location.pathname + window.location.search;
+        if (here && here !== "/" && !here.startsWith("/login")) params.set("next", here);
+      }
       const q = params.toString();
       router.replace(`/login/${q ? `?${q}` : ""}`);
     },
     [router],
   );
+  const onSignedOut = useCallback((expired: boolean) => toLogin(expired), [toLogin]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -34,7 +41,7 @@ export default function SignedInLayout({ children }: { children: ReactNode }) {
       markSignedIn(true);
       setMe(m);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) toLogin(wasSignedIn());
+      if (e instanceof ApiError && e.status === 401) toLogin(wasSignedIn(), true);
       else setError(errorMessage(e));
     }
   }, [toLogin]);
@@ -62,7 +69,7 @@ export default function SignedInLayout({ children }: { children: ReactNode }) {
     );
   }
   return (
-    <AppProvider me={me} onSignedOut={toLogin}>
+    <AppProvider me={me} onSignedOut={onSignedOut}>
       <Shell>{children}</Shell>
     </AppProvider>
   );

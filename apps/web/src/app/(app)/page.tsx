@@ -33,7 +33,7 @@ function RoomTile({ room, stale, ageS, open }: { room: OverviewRoom; stale: bool
         {stale
           ? `Last known: ${STATE_SHORT[room.state]}. ${p.detail}`
           : room.cameras.length === 0
-            ? "No camera connected — this room is not monitored."
+            ? "No camera connected — this area is not monitored."
             : STATE_PRESENTATION[room.state].detail}
       </p>
       {room.cameras.length ? (
@@ -120,7 +120,7 @@ function ServicesHealth({ o }: { o: Overview }) {
       <ul className="svc-list">
         <ServiceRow testId="svc-engine" label="Event engine" ok={s.engine === "ok"} okText="Running" badText={`Error${s.engine_error ? `: ${s.engine_error}` : ""}`} />
         <ServiceRow testId="svc-database" label="Database" ok={s.database === "ok"} okText="Available" badText="Unavailable — history delayed" />
-        <ServiceRow testId="svc-evidence" label="Evidence storage" ok={s.evidence === "ok"} okText="Available" badText="Unavailable — clips may not be saved" />
+        <ServiceRow testId="svc-evidence" label="Clip storage" ok={s.evidence === "ok"} okText="Available" badText="Unavailable — clips may not be saved" />
         <ServiceRow testId="svc-delivery-failed" label="Alert delivery failures" ok={o.alerts_health.failed === 0} okText="None" badText={`${o.alerts_health.failed} failing`} />
         <ServiceRow testId="svc-delivery-delayed" label="Alert delivery delays" ok={o.alerts_health.delayed === 0} okText="None" badText={`${o.alerts_health.delayed} delayed`} />
       </ul>
@@ -140,9 +140,9 @@ export default function OverviewPage() {
       <>
         <PageHeader title="Overview" />
         {overviewError ? (
-          <ErrorState title="Monitoring status could not be loaded" message={`${overviewError} Until it loads, treat every room as not monitored.`} onRetry={() => void refreshOverview()} />
+          <ErrorState title="Monitoring status could not be loaded" message={`${overviewError} Until it loads, treat every area as not monitored.`} onRetry={() => void refreshOverview()} />
         ) : (
-          <Loading label="Loading room status">
+          <Loading label="Loading area status">
             <div className="tiles">
               {[0, 1, 2].map((k) => (
                 <div className="tile tile-skeleton" key={k}>
@@ -165,15 +165,15 @@ export default function OverviewPage() {
     <>
       <PageHeader title="Overview">
         <span className="muted" data-testid="overview-summary">
-          {stale ? "Status unknown — updates stopped" : `${okCount} of ${overview.rooms.length} rooms fully monitored`} · {overview.open_alerts} open
+          {stale ? "Status unknown — updates stopped" : `${okCount} of ${overview.rooms.length} areas fully monitored`} · {overview.open_alerts} open
         </span>
       </PageHeader>
       <AttentionList incidents={attention} roomName={roomName} />
       <div className="overview-grid">
         <section aria-labelledby="rooms-h" className="section">
-          <h2 id="rooms-h">Rooms</h2>
+          <h2 id="rooms-h">Areas</h2>
           {overview.rooms.length === 0 ? (
-            <EmptyState title="No rooms are set up yet">An administrator can register cameras under Cameras. Until then, nothing is being monitored.</EmptyState>
+            <EmptyState title="No areas are set up yet">An administrator can register cameras under Cameras. Until then, nothing is being monitored.</EmptyState>
           ) : (
             <div className="tiles">
               {overview.rooms.map((r) => (
@@ -194,7 +194,9 @@ export default function OverviewPage() {
                 </li>
               ))}
             </ul>
-            <p className="muted small">Zeoatap supports supervision. It never replaces it, even when every room is fully monitored.</p>
+            <p className="muted small" data-testid="human-decides">
+              AI flags, humans decide. An alert is a prompt to look, not a finding about any person: never discipline, report or deduct pay on an alert alone.
+            </p>
           </section>
         </aside>
       </div>

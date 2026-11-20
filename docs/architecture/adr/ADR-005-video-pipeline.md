@@ -1,11 +1,11 @@
-# ADR-005: Video pipeline — GStreamer/PyAV + TensorRT first, DeepStream after benchmark
-**Status:** Proposed · **Date:** 2026-10-27
+# ADR-005: Video pipeline — PyAV + ONNX Runtime first, TensorRT/DeepStream after benchmark
+**Status:** Proposed · **Date:** 2026-10-27, revised 2026-11-20
 
 ## Context
-DeepStream offers high camera density but is proprietary, version-locked to JetPack/CUDA/TensorRT (DS 8.0: Jetson Thor yes, Orin not listed; CUDA 13 + Triton issues reported), and harder to debug.
+DeepStream offers high density but is proprietary and version-locked. A restaurant has 6–16 cameras, far below the ≈ 46 cameras/GPU inference bound measured for YOLOX-M + RTMPose-m with TensorRT FP16 ([BENCHMARK_RESULTS](../../BENCHMARK_RESULTS.md)).
 
 ## Decision
-Phase 1 builds on GStreamer (or PyAV) with NVDEC decode and TensorRT/ONNX Runtime inference. In parallel, benchmark DeepStream 8/9 on the target GPU. **Adopt DeepStream if it gives ≥1.5× camera density at equal accuracy and its license is acceptable (OQ-L4).**
+The worker uses PyAV (RTSP, depacketize, decode), an encoded-packet ring buffer for clips, and ONNX Runtime for inference. TensorRT FP16 and cross-camera batching are the next optimisation; DeepStream is adopted only if it gives ≥ 1.5× density at equal accuracy and acceptable licence terms (OQ-L4) — unlikely to matter at restaurant scale.
 
 ## Consequences
-Simpler first build. Possible migration later. The observation contract insulates core from that change.
+Simple, debuggable pipeline. Measured capacity figures are upper bounds until the worker uses TensorRT.

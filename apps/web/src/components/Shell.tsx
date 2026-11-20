@@ -8,25 +8,28 @@ import { MonitoringBanner } from "./MonitoringBanner";
 import { ThemeToggle } from "./ThemeToggle";
 import { Toasts } from "./Toasts";
 import { isStale, useApp, useNow } from "@/lib/store";
-import { ageSeconds, formatAge } from "@/lib/present";
-import type { Permission } from "@/lib/types";
+import { ROLE_LABEL, ageSeconds, formatAge } from "@/lib/present";
+import { zonedParts } from "@/lib/time";
+import type { Overview, Permission } from "@/lib/types";
 
 interface NavItem {
   href: string;
   label: string;
-  icon: "home" | "inbox" | "camera" | "users" | "log";
+  /** data-testid suffix */
+  id: string;
+  icon: "home" | "inbox" | "camera" | "users" | "log" | "chart" | "key";
   perm: Permission;
 }
 
 const NAV: NavItem[] = [
-  { href: "/", label: "Overview", icon: "home", perm: "view_status" },
-  { href: "/incidents/", label: "Incidents", icon: "inbox", perm: "view_status" },
-  { href: "/cameras/", label: "Cameras", icon: "camera", perm: "admin" },
-  { href: "/users/", label: "Users", icon: "users", perm: "admin" },
-  { href: "/audit/", label: "Audit", icon: "log", perm: "admin" },
+  { href: "/", label: "Overview", id: "overview", icon: "home", perm: "view_status" },
+  { href: "/incidents/", label: "Incidents", id: "incidents", icon: "inbox", perm: "view_status" },
+  { href: "/traffic/", label: "Traffic", id: "traffic", icon: "chart", perm: "view_analytics" },
+  { href: "/access-log/", label: "Access log", id: "access-log", icon: "key", perm: "view_access_log" },
+  { href: "/cameras/", label: "Cameras", id: "cameras", icon: "camera", perm: "admin" },
+  { href: "/users/", label: "Users", id: "users", icon: "users", perm: "admin" },
+  { href: "/audit/", label: "Audit", id: "audit", icon: "log", perm: "admin" },
 ];
-
-const ROLE_LABEL = { caregiver: "Caregiver", lead: "Room lead", reviewer: "Reviewer", admin: "Administrator" } as const;
 
 function isActive(path: string, href: string) {
   const p = path.endsWith("/") ? path : `${path}/`;
@@ -80,9 +83,34 @@ function FacilitySummary() {
         </span>
       ) : (
         <span>
-          {ok}/{total} rooms fully monitored
+          {ok}/{total} areas fully monitored
         </span>
       )}
+    </span>
+  );
+}
+
+/** "Open · closes 22:00" / "Closed · opens 11:00". `open` comes from the core; the times are site-local. */
+export function businessText(b: NonNullable<Overview["business"]>, now: number): string {
+  const p = zonedParts(now, b.timezone);
+  const hhmm = `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+  if (b.open) {
+    const span = b.today.find(([o, c]) => o <= hhmm && (hhmm < c || c < o));
+    return span ? `Open · closes ${span[1]}` : "Open";
+  }
+  const next = b.today.find(([o]) => o > hhmm);
+  return next ? `Closed · opens ${next[0]}` : "Closed";
+}
+
+function BusinessStatus() {
+  const { overview } = useApp();
+  const now = useNow();
+  const b = overview?.business;
+  if (!b) return null;
+  return (
+    <span className={`biz ${b.open ? "biz-open" : "biz-closed"}`} data-testid="business-status" data-open={b.open ? "true" : "false"} title={`Business hours, ${b.timezone}`}>
+      <Icon name="store" size={18} />
+      <span>{businessText(b, now)}</span>
     </span>
   );
 }
@@ -102,12 +130,12 @@ export function Shell({ children }: { children: ReactNode }) {
       <header className="topbar">
         {alertPulse ? <span className="alert-pulse" key={alertPulse} aria-hidden="true" data-testid="alert-pulse" /> : null}
         <div className="topbar-left">
-          <Link href="/" className="brand" aria-label="Zeoatap overview">
+          <Link href="/" className="brand" aria-label="Restaurant overview">
             <span className="brand-mark" aria-hidden="true">
               Z
             </span>
             <span className="brand-text">
-              <span className="brand-facility">{overview?.facility.name ?? "Zeoatap"}</span>
+              <span className="brand-facility">{overview?.facility.name ?? "Restaurant Watchdog"}</span>
               <FacilitySummary />
             </span>
           </Link>
@@ -117,18 +145,25 @@ export function Shell({ children }: { children: ReactNode }) {
             <span className="alerts-pill-label">Open alerts</span>
             <span className="alerts-pill-count">{openAlerts ?? "–"}</span>
           </Link>
+          <BusinessStatus />
           <LiveIndicator />
           {sound.supported ? (
+            // A toggle button: the accessible name stays "Alert sound" and aria-pressed carries the state.
             <button
               type="button"
               className={`btn ${sound.enabled ? "btn-secondary" : "btn-attention"}`}
               onClick={() => void sound.toggle()}
               aria-pressed={sound.enabled}
+              aria-label="Alert sound"
               data-testid="sound-toggle"
             >
               <Icon name={sound.enabled ? "sound" : "mute"} size={18} />
-              <span className="hide-sm">{sound.enabled ? "Alert sound on" : "Enable alert sound"}</span>
-              <span className="show-sm">{sound.enabled ? "Sound on" : "Sound"}</span>
+              <span className="hide-sm" aria-hidden="true">
+                {sound.enabled ? "Alert sound on" : "Alert sound off"}
+              </span>
+              <span className="show-sm" aria-hidden="true">
+                Sound
+              </span>
             </button>
           ) : null}
           <ThemeToggle />
@@ -146,7 +181,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <ul>
             {items.map((n) => (
               <li key={n.href}>
-                <Link href={n.href} className="nav-link" aria-current={isActive(path, n.href) ? "page" : undefined} data-testid={`nav-${n.label.toLowerCase()}`}>
+                <Link href={n.href} className="nav-link" aria-current={isActive(path, n.href) ? "page" : undefined} data-testid={`nav-${n.id}`}>
                   <Icon name={n.icon} />
                   <span>{n.label}</span>
                   {n.href === "/incidents/" && openAlerts ? <span className="nav-count">{openAlerts}</span> : null}

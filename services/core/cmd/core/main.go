@@ -14,26 +14,31 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/alerts"
-	"github.com/saimouli3/zeoatap/services/core/internal/auth"
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
-	"github.com/saimouli3/zeoatap/services/core/internal/evidence"
-	"github.com/saimouli3/zeoatap/services/core/internal/hub"
-	"github.com/saimouli3/zeoatap/services/core/internal/server"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/alerts"
+	"github.com/harsha7123/ai_camera/services/core/internal/auth"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/evidence"
+	"github.com/harsha7123/ai_camera/services/core/internal/hub"
+	"github.com/harsha7123/ai_camera/services/core/internal/server"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
-// SiteConfig is the facility layout bootstrapped into the database at start.
+// SiteConfig is the restaurant layout bootstrapped into the database at
+// start: areas ("rooms"), cameras and zones, POS registers, business hours
+// and per-rule settings. See services/core/site.example.json.
 type SiteConfig struct {
-	Facility store.Facility                      `json:"facility"`
-	Rooms    []store.Room                        `json:"rooms"`
-	Cameras  []siteCamera                        `json:"cameras"`
-	Rules    map[string]eventengine.RuleOverride `json:"rules"`
+	Facility      store.Facility                      `json:"facility"`
+	BusinessHours *eventengine.BusinessHoursConfig    `json:"business_hours"`
+	Rooms         []store.Room                        `json:"rooms"`
+	Registers     []eventengine.Register              `json:"registers"`
+	Cameras       []siteCamera                        `json:"cameras"`
+	Rules         map[string]eventengine.RuleOverride `json:"rules"`
 }
 
 type siteCamera struct {
@@ -107,13 +112,17 @@ func run(log *slog.Logger) error {
 	}
 
 	var site SiteConfig
+	var schedule *eventengine.Schedule
 	if *sitePath != "" {
 		if site, err = loadSite(*sitePath); err != nil {
 			return err
 		}
+		if schedule, err = eventengine.NewSchedule(site.BusinessHours); err != nil {
+			return fmt.Errorf("site config: %w", err)
+		}
 	}
-	if err := checkRuleOverrides(site.Rules, os.Getenv("ZEOATAP_TEST_ALLOW_UNVALIDATED_ALERTS") == "1", log); err != nil {
-		return err
+	if schedule == nil {
+		log.Warn("no business_hours in the site config: the site counts as always open, so after-hours intrusion never fires")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -133,6 +142,9 @@ func run(log *slog.Logger) error {
 		if err := bootstrapSite(startCtx, db, site); err != nil {
 			return fmt.Errorf("site config: %w", err)
 		}
+	}
+	if err := auditAlerting(startCtx, db, site.Rules, log); err != nil {
+		return err
 	}
 	if err := bootstrapAdmin(startCtx, db, os.Getenv("ZEOATAP_BOOTSTRAP_ADMIN"), log); err != nil {
 		return err
@@ -167,7 +179,8 @@ func run(log *slog.Logger) error {
 		Cfg: alerts.Config{WebhookURL: *webhook, AckTimeout: *ackTimeout, MaxLevel: *maxLevel}}
 	srv := server.New(server.Config{
 		InternalToken: token, VisionURL: *visionURL, ClipSpoolDir: *spoolDir, WebDir: *webDir,
-	}, db, h, authSvc, vault, disp, log, engineCams, eventengine.DefaultRules(site.Rules))
+	}, db, h, authSvc, vault, disp, log, engineCams, eventengine.DefaultRules(site.Rules),
+		eventengine.Site{Schedule: schedule, Registers: site.Registers})
 
 	public := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
@@ -191,6 +204,7 @@ func run(log *slog.Logger) error {
 		}(s)
 	}
 	log.Info("core started", "addr", *addr, "internal_addr", *internalAddr, "cameras", len(engineCams),
+		"registers", len(site.Registers),
 		"retention_days", *retention, "webhook", *webhook != "", "web", *webDir != "")
 
 	select {
@@ -250,6 +264,7 @@ func loadSite(path string) (SiteConfig, error) {
 		}
 		rooms[r.ID] = true
 	}
+	cams := map[string]store.Camera{}
 	for i, c := range site.Cameras {
 		c.Camera.Enabled = c.Enabled == nil || *c.Enabled
 		site.Cameras[i] = c
@@ -259,33 +274,64 @@ func loadSite(path string) (SiteConfig, error) {
 		if !rooms[c.RoomID] {
 			return site, fmt.Errorf("site config: camera %q: unknown room %q", c.ID, c.RoomID)
 		}
+		if _, dup := cams[c.ID]; dup {
+			return site, fmt.Errorf("site config: duplicate camera %q", c.ID)
+		}
+		cams[c.ID] = c.Camera
 	}
-	for name, o := range site.Rules {
-		if name != "adult_in_restricted_zone" && name != "infant_off_surface" {
-			return site, fmt.Errorf("site config: unknown rule %q", name)
-		}
-		if o.Policy != "" && o.Policy != eventengine.PolicyAlert && o.Policy != eventengine.PolicyReview {
-			return site, fmt.Errorf("site config: rule %q: policy must be alert or review", name)
-		}
+	if err := validateRegisters(site.Registers, cams); err != nil {
+		return site, fmt.Errorf("site config: %w", err)
+	}
+	if err := eventengine.ValidateOverrides(site.Rules); err != nil {
+		return site, fmt.Errorf("site config: %w", err)
+	}
+	if _, err := eventengine.NewSchedule(site.BusinessHours); err != nil {
+		return site, fmt.Errorf("site config: %w", err)
 	}
 	return site, nil
 }
 
-// checkRuleOverrides refuses validated_for_alerting unless explicitly allowed
-// for testing: there is no signed-release mechanism yet (ADR-008), so no
-// rule can carry real validation evidence.
-func checkRuleOverrides(rules map[string]eventengine.RuleOverride, allowUnvalidated bool, log *slog.Logger) error {
-	for name, o := range rules {
-		if !o.ValidatedForAlerting {
-			continue
+// validateRegisters checks that each POS register points at a known camera
+// and at a customer_side zone on it.
+func validateRegisters(regs []eventengine.Register, cams map[string]store.Camera) error {
+	seen := map[string]bool{}
+	for _, r := range regs {
+		if r.ID == "" || seen[r.ID] {
+			return fmt.Errorf("register ids must be unique and non-empty (%q)", r.ID)
 		}
-		if !allowUnvalidated {
-			return fmt.Errorf("rule %q sets validated_for_alerting, which requires a signed release with a validation report (ADR-008); refusing to start", name)
+		seen[r.ID] = true
+		c, ok := cams[r.CameraID]
+		if !ok {
+			return fmt.Errorf("register %q: unknown camera %q", r.ID, r.CameraID)
 		}
-		log.Warn("!!! UNVALIDATED RULE IS ALERTING STAFF — TEST USE ONLY, NOT FOR A REAL FACILITY !!!",
-			"rule", name, "reason", "ZEOATAP_TEST_ALLOW_UNVALIDATED_ALERTS=1")
+		found := false
+		for _, z := range c.Zones {
+			if z.ID == r.CustomerZone && z.Kind == eventengine.ZoneCustomerSide {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("register %q: camera %q has no customer_side zone %q", r.ID, r.CameraID, r.CustomerZone)
+		}
 	}
 	return nil
+}
+
+// auditAlerting records which rules may page staff. Alerting is the site
+// owner's decision after the shadow tuning period (ADR-008); every start
+// leaves a trace of that decision in the audit log.
+func auditAlerting(ctx context.Context, db *store.DB, rules map[string]eventengine.RuleOverride, log *slog.Logger) error {
+	var enabled []string
+	for name, o := range rules {
+		if o.AlertingEnabled {
+			enabled = append(enabled, name)
+		}
+	}
+	sort.Strings(enabled)
+	for _, name := range enabled {
+		log.Info("rule alerting enabled by site config", "rule", name)
+	}
+	return db.Audit(ctx, "system", "rule_alerting", "site", map[string]any{"enabled": enabled})
 }
 
 func bootstrapSite(ctx context.Context, db *store.DB, site SiteConfig) error {
@@ -303,7 +349,8 @@ func bootstrapSite(ctx context.Context, db *store.DB, site SiteConfig) error {
 		}
 	}
 	return db.Audit(ctx, "system", "site_config_loaded", site.Facility.ID, map[string]any{
-		"rooms": len(site.Rooms), "cameras": len(site.Cameras), "rules": site.Rules})
+		"rooms": len(site.Rooms), "cameras": len(site.Cameras), "registers": len(site.Registers),
+		"business_hours": site.BusinessHours != nil, "rules": site.Rules})
 }
 
 // bootstrapAdmin creates the first admin from "user:password", only while

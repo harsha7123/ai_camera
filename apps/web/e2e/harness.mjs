@@ -1,5 +1,7 @@
 // Shared e2e harness: starts the mock core (serving the static export in ./out)
-// and a Chromium instance. Uses the globally installed `playwright` package.
+// and a Chromium instance. Uses the project's pinned `playwright` devDependency
+// (browsers are not downloaded by `npm ci`; see PLAYWRIGHT_BROWSERS_PATH or
+// `npx playwright install chromium`).
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -13,9 +15,9 @@ const { chromium } = require("playwright");
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const PASSWORD = "zeoatap-demo";
 export const USERS = {
-  caregiver: { username: "carol", name: "Carol Diaz" },
-  lead: { username: "leo", name: "Leo Park" },
-  reviewer: { username: "rita", name: "Rita Okafor" },
+  staff: { username: "jo", name: "Jo Rivera" },
+  manager: { username: "sam", name: "Sam Lee" },
+  owner: { username: "olivia", name: "Olivia Grant" },
   admin: { username: "ada", name: "Ada Mensah" },
 };
 

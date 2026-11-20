@@ -1,4 +1,4 @@
-"""Event-level metrics (SAFETY_VALIDATION §4) and the evaluation driver."""
+"""Event-level metrics and the evaluation driver (see README.md)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from .goals import DEFAULT_LATENCY_BUDGET_S, Goal, MANUAL_CHECKS, evaluate_goal
-from .matching import assign, eligible, in_scope, match_all
-from .model import (OPERATIONAL, STRATA_KEYS, GroundTruth, GTEvent, Incident, StateTimeline,
-                    fault_incidents, fmt_time)
+from .matching import assign, created_too_early, eligible, in_scope, match_all, window_ok
+from .model import OPERATIONAL, STRATA_KEYS, GroundTruth, GTEvent, Incident, StateTimeline, fmt_time
 from .stats import clopper_pearson, percentile, poisson_rate_interval, rule_of_three
 
 INCONCLUSIVE = "INCONCLUSIVE"
@@ -20,7 +19,10 @@ class EvalConfig:
     goals: dict[str, Goal] = field(default_factory=dict)
     latency_budget_override: float | None = None
     pre_tolerance_s: float = 1.0
-    alert_statuses: tuple[str, ...] = ("ALERTED", "SHADOW")
+    # Statuses whose unmatched incidents count as false alerts. None (default):
+    # every conclusive status, i.e. ALERTED, SHADOW and REVIEW_QUEUED, so
+    # review-policy types are held to their false-prompt goal too.
+    alert_statuses: tuple[str, ...] | None = None
     confidence: float = 0.95
     decision_sided: str = "two"  # "two": two-sided CP/Poisson bounds; "one": one-sided
     count_duplicates_as_false_alerts: bool = False
@@ -31,6 +33,11 @@ class EvalConfig:
             return self.latency_budget_override
         g = self.goals.get(event_type)
         return g.latency_budget_s if g else DEFAULT_LATENCY_BUDGET_S
+
+    def counts_as_alert(self, inc: Incident) -> bool:
+        if inc.status == INCONCLUSIVE:
+            return False
+        return self.alert_statuses is None or inc.status in self.alert_statuses
 
 
 def _prop(k: int, n: int, conf: float) -> dict:
@@ -57,9 +64,6 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
              states: StateTimeline | None = None) -> dict:
     gt_types = sorted({e.event_type for e in gt.events})
     incidents = list(incidents)
-    if states is not None:
-        # Camera-health faults are monitoring states, scored only when GT has them.
-        incidents += [i for i in fault_incidents(states) if i.event_type in gt_types]
     conclusive = [i for i in incidents if i.status != INCONCLUSIVE]
     inconclusive = [i for i in incidents if i.status == INCONCLUSIVE]
 
@@ -68,7 +72,7 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
     sess_of_inc: dict[str, str] = {}
     for s in gt.sessions:
         for i in incidents:
-            if i.id not in sess_of_inc and in_scope(s, i):
+            if i.id not in sess_of_inc and in_scope(s, i, cfg.budget_for, cfg.pre_tolerance_s):
                 sess_of_inc[i.id] = s.session_id
 
     # GT events missed by conclusive incidents but covered by an INCONCLUSIVE one.
@@ -98,6 +102,7 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
             confusion[g.event_type]["INCONCLUSIVE"] += 1
             continue
         other = [i for i in res.false_positives if sess_of_inc.get(i.id) == g.session_id
+                 and i.event_type != g.event_type
                  and i.start <= g.end + cfg.budget_for(g.event_type) and i.end >= g.start - cfg.pre_tolerance_s]
         if other:
             # Columns sum to n: a wrong-type miss is counted under the type the system reported.
@@ -111,6 +116,20 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
             if i.start <= h.end and i.end >= h.start:
                 fp_on_hard_negative[i.id] = h.label
                 break
+
+    # Same-type incidents near an event that were rejected only because they
+    # were created before GT.start - pre_tolerance (negative latency).
+    early = []
+    for i in res.false_positives:
+        s = session_of.get(sess_of_inc.get(i.id, ""))
+        for g in (s.events if s else []):
+            if window_ok(g, i, cfg.budget_for(g.event_type), cfg.pre_tolerance_s) and \
+                    created_too_early(g, i, cfg.pre_tolerance_s):
+                early.append({"incident_id": i.id, "gt_id": g.id, "event_type": g.event_type,
+                              "latency_s": round(i.created_at - g.start, 3)})
+    warnings = list(gt.warnings) + [
+        f"incident {e['incident_id']} was created {-e['latency_s']:.3f} s before GT event {e['gt_id']} started "
+        f"(beyond the {cfg.pre_tolerance_s} s pre-tolerance): not matched; check clock alignment" for e in early]
 
     hours = _hours(gt, states)
     total_sched = sum(h["scheduled"] for h in hours.values())
@@ -159,7 +178,7 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
         "config": {
             "pre_tolerance_s": cfg.pre_tolerance_s,
             "latency_budget_s": {et: cfg.budget_for(et) for et in types},
-            "alert_statuses": list(cfg.alert_statuses),
+            "alert_statuses": list(cfg.alert_statuses) if cfg.alert_statuses is not None else None,
             "confidence": cfg.confidence,
             "decision_sided": cfg.decision_sided,
             "count_duplicates_as_false_alerts": cfg.count_duplicates_as_false_alerts,
@@ -175,8 +194,9 @@ def evaluate(gt: GroundTruth, incidents: list[Incident], cfg: EvalConfig,
         "false_positives": [{"incident_id": i.id, "event_type": i.event_type, "status": i.status,
                              "start": fmt_time(i.start), "hard_negative": fp_on_hard_negative.get(i.id)}
                             for i in res.false_positives],
+        "rejected_negative_latency": early,
         "out_of_scope": [i.id for i in out_of_scope],
-        "warnings": gt.warnings,
+        "warnings": warnings,
     }
 
 
@@ -193,7 +213,7 @@ def _type_metrics(et, gt, res, gt_inconclusive, dups_by_gt, hours, cfg, conclusi
     incs = [i for i in conclusive if i.event_type == et and i.id in sess_of_inc]
     dups = [(i, g) for i, g in res.duplicates if g.event_type == et]
     fps = [i for i in res.false_positives if i.event_type == et]
-    is_alert = lambda i: i.status in cfg.alert_statuses  # noqa: E731
+    is_alert = cfg.counts_as_alert
     fa = [i for i in fps if is_alert(i)]
     dup_alerts = [i for i, _ in dups if is_alert(i)]
     fa_count = len(fa) + (len(dup_alerts) if cfg.count_duplicates_as_false_alerts else 0)

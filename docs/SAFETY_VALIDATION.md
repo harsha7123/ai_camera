@@ -1,142 +1,135 @@
-# Safety Validation Framework
+# Accuracy & Validation Plan
 
-**Date:** 2026-10-27 · **Status:** Protocol defined. **No validation has been executed.** All numbers below are *engineering goals*, not achieved performance.
+*(File name kept as `SAFETY_VALIDATION.md` for link stability.)*
+
+**Date:** 2026-11-20 · **Status:** Plan defined. **No validation has been executed on restaurant footage or POS data.** Every number below is a pre-registration proposal or an engineering goal, not a result.
+Tooling: [`tools/eval`](../tools/eval/) (event-level matching, exact Clopper–Pearson and Poisson intervals, `INSUFFICIENT_DATA` refusal). Its goal and ground-truth files must use the `event_type` names in [API.md](../packages/contracts/API.md).
 
 ---
 
 ## 1. Principles
 
-- **Accuracy is not a safety metric.** In a nursery, >99.9% of frames are "normal", so a model that never alerts is 99.9% accurate and useless.
-- **Measure at the event level,** per event type, per condition stratum.
-- **Pre-register** acceptance criteria before looking at test results.
-- **Human review is mandatory** for every serious incident. The system is a review aid.
+- **Event level, per rule.** A 10-minute queue is one event, not 3,000 frames. Frame metrics are diagnostic only.
+- **Pre-register** each rule's goal, sample size and enable criteria before looking at results.
+- **Confidence bounds, not point estimates.** A rule "passes" when the 95% lower bound on recall (or upper bound on false alerts) meets the goal.
+- **Shadow first.** Alert-policy rules run as SHADOW for 30–60 days at each pilot site; only the owner enables alerting, per rule (ADR-008).
+- **AI flags, humans decide.** Validation measures whether alerts are *worth reviewing*, never whether a person did something.
 
 ---
 
 ## 2. Event definitions (annotation contract)
 
-Each event type has a written definition with **start**, **end**, **inclusion** and **exclusion** criteria. Example:
-
-**A1 `infant_off_surface`**
-- *Start:* last frame in which any part of the infant's body is supported by the raised surface.
-- *End:* first frame in which the infant is supported by the floor or an object below surface level, or is held by an adult.
-- *Include:* rolling off, sliding off, climbing over a rail and landing.
-- *Exclude:* the adult lifts the infant (held throughout), or the infant is placed on the floor by an adult.
-- *Visibility:* annotate `visible`, `partial` or `not_visible` for the surface and floor regions.
-
----
-
-## 3. Annotation methodology
-
-### 3.1 Schema (per recording session)
-
-| Layer | Fields |
-|---|---|
-| Recording | session_id, facility_id (pseudonymous), camera_id, resolution, fps, codec, IR mode, lighting, camera height/angle, consent_ids |
-| Tracks | track_id, role ∈ {infant, adult}, bbox per frame (keyframes + interpolation), held_by |
-| Pose | 17 keypoints + visibility flag per keypoint (sampled frames), pose_quality_annotator ∈ {good, partial, unusable} |
-| Activities | segments of routine care: lift, carry, place, feed, change, rock, bounce, soothe, play, sleep-settle |
-| Candidate safety events | event_type, start, end, severity_label, visibility, annotator_confidence ∈ {certain, likely, unsure} |
-| Conditions | occlusion (blanket, crib bars, adult body), blur, low light, IR, obstruction |
-| Adjudication | ≥2 independent annotators for safety events. A third, senior reviewer adjudicates disagreements. Inter-annotator agreement reported (Cohen's κ for labels, temporal IoU for boundaries) |
-
-### 3.2 Splits and leakage prevention
-- Split by **recording session**, and where possible by **camera**, **facility** and **subject/manikin**.
-- **Never** place clips from the same session in different splits. Neighbouring windows are near-duplicates.
-- Hold out ≥1 facility (or ≥1 room layout) as an **out-of-distribution test** set.
-- The test set is locked and versioned. Only the validation owner has access, and evaluation runs are logged.
+| event_type | Ground-truth start | Ground-truth end | Exclusions |
+|---|---|---|---|
+| `after_hours_intrusion` | First frame a person is visible outside the staff window | Person leaves view | Authorised late staff are still positives (the rule cannot know authorisation); label `authorised` for analysis |
+| `camera_tamper` | Fault injected / view lost | View restored | Scheduled maintenance windows |
+| `restricted_zone_entry` | Non-staff person enters zone | Leaves | Staff (by annotator knowledge of uniforms/roster, used for labels only) |
+| `person_down` | Person reaches the floor | Person stands up | Deliberate sitting, kneeling, crouching, cleaning, children playing → **hard negatives** |
+| `long_queue` | Queue reaches `max_people` | Drops below | — |
+| `long_wait` | Person joins queue | Served or leaves | — |
+| `unattended_post` | Last staff leaves post zone | Staff returns | Closed hours |
+| `pos_no_sale` | POS `no_sale` timestamp | — | — |
+| `pos_refund_no_customer` | POS void/refund/comp timestamp with no customer at the counter (−20 s … +5 s) | — | Annotator labels customer presence for **every** void/refund/comp, not only flagged ones |
 
 ---
 
-## 4. Metrics
+## 3. Metrics
 
 | Metric | Definition |
 |---|---|
-| **Event-level recall** | (# ground-truth events matched by ≥1 system incident) / (# GT events) |
-| **Event-level precision** | (# system incidents matched to a GT event) / (# system incidents) |
-| **Matching rule** | An incident matches a GT event of the *same type* if their time intervals overlap, or the incident start falls within [GT.start − 1 s, GT.end + `latency_budget`]. Each GT event matches at most one incident (Hungarian on temporal IoU). Extra incidents on the same GT event count as **duplicates**, not TPs |
-| **False alerts per camera-hour** | Unmatched *alert-severity* incidents ÷ analyzed camera-hours (only hours with FULLY_OPERATIONAL status count; degraded hours are reported separately) |
-| Missed-event rate | 1 − recall, reported with a 95% Clopper–Pearson interval |
-| Detection latency | incident.created_at − GT.start (median, p95) |
-| Alert delivery latency | first delivery receipt − incident.created_at |
-| Staff acknowledgement latency | ack_at − first delivery (pilot) |
-| Dedup accuracy | Fraction of GT events producing exactly one incident |
-| Camera uptime | Fraction of scheduled time with stream OK |
-| Processing uptime | Fraction of scheduled time with state = FULLY_OPERATIONAL |
-| Frame drop rate | Dropped ÷ sampled frames |
-| Performance under occlusion | All metrics stratified by occlusion, IR, lighting, camera angle |
-| Per-event confusion matrices | Including `inconclusive` as a separate outcome |
-| Calibration | Reliability diagram + expected calibration error for each learned score |
-| Recovery time | Fault injected → state back to FULLY_OPERATIONAL |
-
-### 4.1 Frame-level vs. event-level
-A 10-second event at 15 fps has 150 frames. A frame classifier that is right on 140 of them is not "140 true positives". At event level it is **one** detected event. Conversely, three separate incidents for that one event are 1 TP + 2 duplicates (alert fatigue). **All reported results are event-level.** Frame-level metrics are diagnostic only.
-
-### 4.2 Rare events
-- With *n* positive events and **0 misses**, the 95% upper bound on the miss rate is ≈ 3/*n* ("rule of three"). **To claim a miss rate below 10% with 95% confidence you need ≥30 positives with zero misses. For below 5%, you need ≥60.**
-- Therefore staged positives (manikin protocol) must reach these counts **per event type and per major stratum** (day/IR).
-- False-alert rate needs **camera-hours**. For example, to bound high-priority false alerts below 0.01/camera-hour with ~95% confidence and 0 observed, you need ≈300 camera-hours (3/0.01).
+| Event recall | GT events matched by ≥ 1 incident of the same type ÷ GT events (matching as in tools/eval: overlap or start within [GT.start − 1 s, GT.end + latency budget]; one-to-one Hungarian) |
+| Precision (shadow) | Incidents dispositioned as true (`ok`, `coach`, `investigate`, `escalated_external`) ÷ incidents dispositioned conclusively. `false_detection` = FP. `inconclusive` reported separately, excluded from both |
+| False alerts / exposure unit | Unmatched alert-policy incidents (ALERTED or SHADOW) ÷ exposure (camera-hours in FULLY_OPERATIONAL, or POS events for POS rules) |
+| Duplicates | Extra incidents on one GT event (alert fatigue) |
+| Latency | `created_at − GT.start` beyond the rule's own minimum duration (p50, p95) |
+| Health honesty | Any time green was shown while not FULLY_OPERATIONAL (must be zero) |
+| Reconciliation (POS) | POS `no_sale` events for known registers vs. `pos_no_sale` incidents (must match exactly) |
+| Review effort | Manager minutes per shift on the exception queue; hours of footage review saved (playbook pilot metric) |
 
 ---
 
-## 5. Pre-registered acceptance goals (proposed, per event type)
+## 4. Statistics (consistent with tools/eval)
 
-| Event | Stage | Recall goal (lower 95% CI bound) | False alerts / camera-hour goal | Latency p95 goal |
-|---|---|---|---|---|
-| D1/D2 camera health | Pilot alert | ≥ 0.99 on injected faults (n≥100) | ≤ 0.01 | ≤ 10 s |
-| D3 adult in restricted zone | Pilot alert | ≥ 0.90 (n≥60) | ≤ 0.02 | ≤ 5 s |
-| A1 infant off surface | Shadow → alert | ≥ 0.90 (n≥60 manikin, both lighting modes) | ≤ 0.005 | ≤ 5 s |
-| D4 infant in hazard zone | Review | ≥ 0.85 | ≤ 0.05 (review) | ≤ 30 s |
-| C1/C2 immobility / covered | Review only | ≥ 0.80 | ≤ 0.05 (review) | n/a |
-| B1/B2 handling | **Research only** | Report only. No deployment goal until feasibility proven | — | — |
-| E1 respiration | **Not deployed** | — | — | — |
+**Recall with zero misses.** Exact 95% Clopper–Pearson. For n/n detected, the two-sided lower bound is `0.025^(1/n)`, the one-sided `0.05^(1/n)`; the rule of three approximates the one-sided bound as `1 − 3/n`.
 
-Facility-level sanity budget [E]: 16 cameras × 10 operating hours = 160 camera-hours/day. 0.005 FA/cam-hr ≈ **0.8 false high-priority alerts per day**, which is roughly the upper limit that staff will tolerate before alert fatigue sets in. The tolerable level must be confirmed with staff interviews (OQ-P3).
+| Recall goal (lower bound) | n, two-sided (default) | n, one-sided | n, rule of three |
+|---|---|---|---|
+| 0.80 | 17 | 14 | 15 |
+| 0.90 | 36 | 29 | 30 |
+| 0.95 | 72 | 59 | 60 |
+| **0.99** | **368** | 299 | **300** |
+
+- **n = 100 with zero misses does not support 0.99**: its lower bound is 0.964 (two-sided) or 0.970 (one-sided). Never state that n ≥ 100 suffices for a 99% claim.
+- Any miss raises the required n. tools/eval returns `INSUFFICIENT_DATA` (never PASS) below the required n.
+
+**False-alert rates with zero observed.** Exact Poisson: the two-sided 95% upper bound for 0 events in exposure E is 3.69/E (one-sided 3.00/E). To show a rate ≤ r you need **E ≥ 3.69/r**. For proportions (POS rules), 0 FPs in n events bounds the FP fraction at `1 − 0.025^(1/n)`.
 
 ---
 
-## 6. Validation phases
+## 5. Proposed per-rule goals (pilot, pre-registration draft)
+
+| Rule | Policy | Recall goal (95% LB) → staged/labelled n | FA goal | Exposure to show FA goal with 0 FAs | Latency p95 |
+|---|---|---|---|---|---|
+| `camera_tamper` | alert | 0.95 → 72 injected faults (unplug, cover, turn, black) | 0.002 / cam-h | 1,845 cam-h | ≤ 40 s (30 s rule + 10 s) |
+| `after_hours_intrusion` | alert | 0.90 → 36 staged after-close entries, lights on and off | 0.004 / closed cam-h | 922 cam-h | ≤ 10 s |
+| `person_down` | alert | 0.90 → 36 staged falls (consenting staff, mats) + hard negatives (crouch, kneel, sit on floor, mop) | 0.005 / occupied cam-h | 738 cam-h | ≤ 10 s |
+| `long_queue` | alert | 0.90 → 36 labelled episodes | 0.02 / open queue-cam-h | 185 cam-h | ≤ 15 s |
+| `unattended_post` | alert | 0.90 → 36 labelled episodes | 0.02 / open post-cam-h | 185 cam-h | ≤ 15 s |
+| `pos_refund_no_customer` | alert | 0.90 → 36 staged no-customer refunds | FP fraction ≤ 0.02 of void/refund/comp events | 183 events | ≤ 10 s after POS event arrives |
+| `restricted_zone_entry` | review | 0.80 → 17 staged entries by non-staff | Review budget (§6) | — | ≤ 10 s |
+| `long_wait` | review | 0.80 → 17 labelled waits | Review budget | — | ≤ 15 s |
+| `pos_no_sale` | review | **Exact reconciliation** (deterministic) | — | — | ≤ 10 s |
+
+These goals are proposals for the owner and the pilot site to confirm before the shadow period starts.
+
+---
+
+## 6. False-alert budget (summed across rules)
+
+A manager tolerates a **total** number of false pages per day, not one per rule. The budget is `Σ_rules (FA rate × daily exposure) ≤ T`, where T is the manager's tolerance (assumed **2 false alerts/site/day**, OQ-P3 to confirm). Worked example, Harbor Grill on a Monday (open 11:00–22:00 = 11 h; staff window 09:30–23:30 = 14 h; closed 10 h; 5 cameras; 1 queue zone, 1 post zone; assumed 15 void/refund/comp per day [E]):
+
+| Rule (alert policy) | Exposure/day | FA goal | Expected false alerts/day |
+|---|---|---|---|
+| after_hours_intrusion | 5 cams × 10 h = 50 cam-h | 0.004 | 0.20 |
+| camera_tamper | 5 × 24 h = 120 cam-h | 0.002 | 0.24 |
+| person_down | 5 × 14 h = 70 cam-h | 0.005 | 0.35 |
+| long_queue | 1 × 11 h = 11 cam-h | 0.02 | 0.22 |
+| unattended_post | 1 × 11 h = 11 cam-h | 0.02 | 0.22 |
+| pos_refund_no_customer | 15 events | 0.02 | 0.30 |
+| **Total** | | | **1.53 ≤ T = 2** (0.47 headroom) |
+
+At exposure/day as above, showing each FA goal with zero false alerts takes: tamper 1,845/120 ≈ 15 days; after-hours 922/50 ≈ 18 days; person_down 738/70 ≈ 11 days; queue and post 185/11 ≈ 17 days; refunds 183/15 ≈ 12 days. **Any observed false alert extends this**, which is why the shadow period is 30–60 days and not shorter. If one rule overspends, either tune it, move it to `review`, or keep it in SHADOW; do not raise T silently. Review-policy rules do not page, but their volume is capped by a separate review budget (proposed ≤ 10 items per shift, to confirm with managers).
+
+---
+
+## 7. Phases
 
 | Phase | What | Exit criteria |
 |---|---|---|
-| **1. Offline replay** | Replay authorized recordings through the full pipeline (file → RTSP simulator) | Pipeline is deterministic (same input → same incidents). No crashes over 100 h of replay |
-| **2. Annotated test set** | Locked test set, pre-registered metrics | Goals in §5 met on the validation set first. Test set run once per release candidate |
-| **3. Shadow mode** | Live in facility. Incidents go to a hidden queue reviewed by the project team. **Staff see nothing, and no caregiving decisions change** | ≥4 weeks or ≥ required camera-hours. False alert rate within goal. All misses root-caused |
-| **4. Supervised pilot** | Alerts visible to staff, with human review mandatory | Stop conditions (§8) never triggered. Staff survey on alert burden. Independent review of results |
-| **5. Controlled expansion** | More rooms, then more facilities, after an independent review | Per-facility metrics within goal. No unresolved serious incidents |
+| 1. Offline replay | Recorded or staged clips + POS logs → worker → core replay → tools/eval | Deterministic (same input → same incidents); no crashes |
+| 2. On-site staged tests | During setup week: fault injection, after-close walk-ins, staged falls on mats, staged no-customer refunds | Recall bounds in §5 or documented shortfall |
+| 3. **Shadow (30–60 days)** | All alert rules SHADOW; owner reviews and dispositions; labels every void/refund/comp for customer presence; weekly spot audit of random footage hours for misses | Per-rule enable criteria (§8) |
+| 4. Per-rule enable | Owner sets `alerting_enabled: true` for passing rules only; audited at startup | Stop conditions never triggered |
+| 5. Expand | Add P2 rules (shadow again), more sites | Per-site metrics within goal |
 
----
+## 8. Per-rule enable criteria (all must hold)
 
-## 7. Go/no-go checklist (per event type, per release)
+- [ ] Rule's camera coverage verified (zones drawn, `floor` zones on every camera where `person_down` should run)
+- [ ] Shadow period ≥ 30 days **and** exposure ≥ the §5 requirement for the rule's FA goal
+- [ ] FA upper bound ≤ goal; the site's summed budget (§6) still ≤ T with this rule added
+- [ ] Recall lower bound ≥ goal from staged tests, or the owner accepts a documented lower claim
+- [ ] Precision from dispositions reported with its interval
+- [ ] No health-honesty violations; failure-injection suite passes ([TESTING_STRATEGY](TESTING_STRATEGY.md))
+- [ ] Employee notice/acknowledgment in place for the monitored area ([PRIVACY_SECURITY_COMPLIANCE](PRIVACY_SECURITY_COMPLIANCE.md))
 
-- [ ] Event definition approved by the safety lead + childcare domain expert
-- [ ] Test set locked. Positives ≥ required n per stratum
-- [ ] Recall lower CI bound ≥ goal; FA/camera-hour ≤ goal; latency p95 ≤ goal
-- [ ] Performance reported per stratum (IR, occlusion, angle). No stratum below 80% of overall recall without a documented mitigation
-- [ ] Shadow mode completed with required camera-hours
-- [ ] Failure-injection suite passes (TESTING_STRATEGY §7)
-- [ ] Monitoring-unavailable states verified to display correctly
-- [ ] Rollback tested on the target hardware
-- [ ] Privacy review sign-off for any new data flows
-- [ ] Release manifest signed with `validated_for_alerting=true` referencing this report
+## 9. Stop conditions (pilot)
 
-## 8. Pilot stop conditions (pre-defined)
-- Any missed GT event in a severity class where the system had claimed coverage *and* staff relied on it. Pause and run a root-cause review.
-- High-priority false alerts above 3× goal for 3 consecutive days.
-- Any monitoring-status display error (green shown while not analyzing).
-- Any privacy incident (unauthorized clip access).
-- Staff report reduced supervision due to reliance on the system.
+- Green shown while a camera was not analysing.
+- False alerts > 3× the site budget T for 3 consecutive days → affected rules back to SHADOW.
+- Any unauthorised clip access, or a clip seen by a role that should not see it.
+- Any adverse action (discipline, pay deduction, police report) taken on an alert **without** a manager's clip review → pause and retrain managers.
+- Monitoring of a protected area (break room, restroom, locker area) discovered → camera disabled immediately.
 
-## 9. Rollback process
-1. Automatic: canary metric breach → revert to the previous signed release (≤5 min).
-2. Manual: ops command, with a reason logged to audit.
-3. Post-rollback: incidents created under the bad release are flagged for re-review.
-4. Root-cause analysis before re-release.
+## 10. Rollback
 
----
-
-## 10. Per-event validation notes
-
-- **Handling (B1/B2):** positives can only come from manikin protocols performed by trained staff, with a weighted manikin with an articulated neck. **Hard negatives** are the core of the dataset: rocking, bouncing, burping pats, quick lifts, play. If a classifier cannot achieve high precision against hard negatives, the feature **does not ship**. Any output is labelled "movement pattern flagged for review", never "rough handling".
-- **Prolonged immobility (C1):** the ground truth is about *visibility and motion*, not health. Validate that the system correctly reports "no visible movement for T" and **"cannot see the infant"**. Never validate or claim anything about breathing or wellbeing.
-- **Falls (A1):** manikin drop protocol across heights, surfaces, camera angles, lighting, with and without an adult nearby. Plus hard negatives: placing infants on the floor and lifting from the crib.
+Set the rule's `alerting_enabled` to false (or policy to `review`) and restart core; the change is audited. Incidents raised under the bad rule version are flagged for re-review by `rule_version`.

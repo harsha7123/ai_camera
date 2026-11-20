@@ -6,7 +6,7 @@ import { EmptyState, ErrorState, Loading, PageHeader, Skeleton, StateBadge } fro
 import { api, errorMessage } from "@/lib/api";
 import { useApp, useNow } from "@/lib/store";
 import { ageSeconds, formatAge } from "@/lib/present";
-import { ZONES_EXAMPLE, validateZonesJson } from "@/lib/zones";
+import { ZONES_EXAMPLE, ZONE_KINDS, ZONE_KIND_HINT, validateZonesJson } from "@/lib/zones";
 import type { Camera, CameraStateEvent } from "@/lib/types";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -16,7 +16,8 @@ function RegisterForm({ onCreated, rooms }: { onCreated: (c: Camera) => void; ro
     id: "",
     room_id: "",
     name: "",
-    protected: true,
+    priority: false,
+    staff_only: false,
     enabled: true,
     authorized_by: "",
     authorized_at: today(),
@@ -94,11 +95,14 @@ function RegisterForm({ onCreated, rooms }: { onCreated: (c: Camera) => void; ro
   return (
     <form className="card" onSubmit={submit} noValidate aria-labelledby="reg-h" data-testid="camera-form">
       <h2 id="reg-h">Register a camera</h2>
-      <p className="muted small">A camera can only be registered with a written authorization record (who approved it, when, and for what scope).</p>
+      <p className="muted small">A camera can only be registered with a written authorization record (who approved it, when, and for what scope). Video only: audio is never recorded.</p>
+      <p className="notice notice-info small" data-testid="placement-rule">
+        Never point a camera into restrooms, changing rooms, locker areas or guest rooms. Post a notice and get written employee acknowledgment before go-live.
+      </p>
       <div className="form-grid">
         {Text({ k: "id", label: "Camera ID", hint: "Short unique ID, e.g. cam7" })}
-        {Text({ k: "name", label: "Camera name", hint: "Where it points, e.g. Changing table" })}
-        {Text({ k: "room_id", label: "Room ID", hint: "Existing room ID, or a new one", list: "room-ids" })}
+        {Text({ k: "name", label: "Camera name", hint: "Where it points, e.g. Register 2 overhead" })}
+        {Text({ k: "room_id", label: "Area ID", hint: "Existing area ID (counter, kitchen…), or a new one", list: "room-ids" })}
         <datalist id="room-ids">
           {rooms.map((r) => (
             <option key={r.id} value={r.id}>
@@ -110,15 +114,19 @@ function RegisterForm({ onCreated, rooms }: { onCreated: (c: Camera) => void; ro
       <fieldset className="auth-fieldset">
         <legend>Authorization record</legend>
         <div className="form-grid">
-          {Text({ k: "authorized_by", label: "Authorized by", hint: "Name and role of the person who approved this camera" })}
+          {Text({ k: "authorized_by", label: "Authorized by", hint: "Name and role of the person who approved this camera, e.g. Owner" })}
           {Text({ k: "authorized_at", label: "Authorization date", type: "date" })}
-          {Text({ k: "authorization_scope", label: "Authorization scope", hint: "e.g. Infant room A, operating hours only" })}
+          {Text({ k: "authorization_scope", label: "Authorization scope", hint: "e.g. Register 2 and its queue; video only, no audio" })}
         </div>
       </fieldset>
       <div className="check-row">
         <label className="check">
-          <input type="checkbox" checked={f.protected} onChange={(e) => set("protected", e.target.checked)} />
-          <span>Protected camera (safety rules apply)</span>
+          <input type="checkbox" checked={f.priority} onChange={(e) => set("priority", e.target.checked)} data-testid="camera-priority" />
+          <span>Priority camera (register/POS: analysed at 15 fps instead of 5)</span>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={f.staff_only} onChange={(e) => set("staff_only", e.target.checked)} data-testid="camera-staff-only" />
+          <span>Staff-only area (kitchen, back of house: people seen here are treated as staff)</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={f.enabled} onChange={(e) => set("enabled", e.target.checked)} />
@@ -141,7 +149,7 @@ function RegisterForm({ onCreated, rooms }: { onCreated: (c: Camera) => void; ro
       <div id="zones-status" aria-live="polite" data-testid="zones-status">
         {zones.ok ? (
           <p className="muted small">
-            {zones.zones.length} {zones.zones.length === 1 ? "zone" : "zones"} valid. Kinds: surface, restricted, sleep. Coordinates are fractions of the frame (0–1).
+            {zones.zones.length} {zones.zones.length === 1 ? "zone" : "zones"} valid. Coordinates are fractions of the frame (0–1); a count_line has exactly 2 points, every other kind at least 3.
           </p>
         ) : (
           <ul className="field-error-list">
@@ -151,6 +159,19 @@ function RegisterForm({ onCreated, rooms }: { onCreated: (c: Camera) => void; ro
           </ul>
         )}
       </div>
+      <details className="zone-kinds">
+        <summary>Zone kinds</summary>
+        <dl className="kv small">
+          {ZONE_KINDS.map((k) => (
+            <div key={k} className="kv-pair">
+              <dt>
+                <code>{k}</code>
+              </dt>
+              <dd>{ZONE_KIND_HINT[k]}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
       {error ? (
         <p className="notice notice-error" role="alert">
           {error}
@@ -219,7 +240,7 @@ function CamerasInner() {
                 <thead>
                   <tr>
                     <th scope="col">Camera</th>
-                    <th scope="col">Room</th>
+                    <th scope="col">Area</th>
                     <th scope="col">State</th>
                     <th scope="col">Authorization</th>
                     <th scope="col">Zones</th>
@@ -232,7 +253,8 @@ function CamerasInner() {
                         <strong>{c.name}</strong>
                         <div className="muted small">
                           {c.id}
-                          {c.protected ? " · protected" : ""}
+                          {c.priority ? " · priority (15 fps)" : ""}
+                          {c.staff_only ? " · staff only" : ""}
                           {!c.enabled ? " · disabled" : ""}
                         </div>
                       </td>

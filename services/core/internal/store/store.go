@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
 )
 
 //go:embed migrations/*.up.sql
@@ -56,7 +56,18 @@ func (d *DB) Ping(ctx context.Context) error {
 // Migrate applies embedded migrations that have not run yet, each in its own
 // transaction.
 func (d *DB) Migrate(ctx context.Context) error {
-	if _, err := d.Pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	// A session-level advisory lock serialises concurrent starts (e.g. two
+	// core processes during an upgrade), so a migration never runs twice.
+	conn, err := d.Pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(7354401)`); err != nil {
+		return err
+	}
+	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock(7354401)`) //nolint:errcheck
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return err
 	}
@@ -68,7 +79,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 	for _, name := range names {
 		version := strings.TrimSuffix(strings.TrimPrefix(name, "migrations/"), ".up.sql")
 		var done bool
-		if err := d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&done); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&done); err != nil {
 			return err
 		}
 		if done {
@@ -78,7 +89,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		err = pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, string(sql)); err != nil {
 				return fmt.Errorf("migration %s: %w", version, err)
 			}
@@ -95,14 +106,14 @@ func (d *DB) Migrate(ctx context.Context) error {
 // ---- eventengine.Store -------------------------------------------------
 
 const incidentCols = `id, idempotency_key, room_id, room_zone, event_type, family, start_ts, end_ts,
-	cameras, status, rule_version, model_versions, source, detail`
+	cameras, status, rule_version, model_versions, source, detail, coalesce(pos_ref, '')`
 
 func scanIncident(row pgx.Row) (*eventengine.Incident, error) {
 	var inc eventengine.Incident
 	var models []byte
 	var status string
 	err := row.Scan(&inc.ID, &inc.IdempotencyKey, &inc.RoomID, &inc.RoomZone, &inc.EventType, &inc.Family,
-		&inc.Start, &inc.End, &inc.Cameras, &status, &inc.RuleVersion, &models, &inc.Source, &inc.Detail)
+		&inc.Start, &inc.End, &inc.Cameras, &status, &inc.RuleVersion, &models, &inc.Source, &inc.Detail, &inc.PosRef)
 	if err != nil {
 		return nil, err
 	}
@@ -124,11 +135,11 @@ func (d *DB) InsertIfAbsent(inc *eventengine.Incident) (*eventengine.Incident, b
 		models = []byte("{}")
 	}
 	tag, err := d.Pool.Exec(ctx, `INSERT INTO incidents (id, idempotency_key, room_id, room_zone, event_type, family,
-		start_ts, end_ts, cameras, status, rule_version, model_versions, source, detail, retention_deadline)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now() + make_interval(days => $15))
+		start_ts, end_ts, cameras, status, rule_version, model_versions, source, detail, pos_ref, retention_deadline)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,''), now() + make_interval(days => $16))
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		inc.ID, inc.IdempotencyKey, inc.RoomID, inc.RoomZone, inc.EventType, inc.Family, inc.Start, inc.End,
-		inc.Cameras, string(inc.Status), inc.RuleVersion, models, inc.Source, inc.Detail, d.RetentionDays)
+		inc.Cameras, string(inc.Status), inc.RuleVersion, models, inc.Source, inc.Detail, inc.PosRef, d.RetentionDays)
 	if err != nil {
 		return nil, false, err
 	}
@@ -142,8 +153,8 @@ func (d *DB) InsertIfAbsent(inc *eventengine.Incident) (*eventengine.Incident, b
 func (d *DB) Update(inc *eventengine.Incident) error {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
-	_, err := d.Pool.Exec(ctx, `UPDATE incidents SET end_ts=$2, cameras=$3, status=$4 WHERE id=$1`,
-		inc.ID, inc.End, inc.Cameras, string(inc.Status))
+	_, err := d.Pool.Exec(ctx, `UPDATE incidents SET start_ts=$2, end_ts=$3, cameras=$4, status=$5 WHERE id=$1`,
+		inc.ID, inc.Start, inc.End, inc.Cameras, string(inc.Status))
 	return err
 }
 
@@ -157,13 +168,13 @@ func (d *DB) Get(id string) (*eventengine.Incident, error) {
 	return inc, err
 }
 
-func (d *DB) FindMergeable(roomID, roomZone, family string, start time.Time, gap time.Duration) (*eventengine.Incident, error) {
+func (d *DB) FindMergeable(roomID, roomZone, eventType string, start time.Time, gap time.Duration) (*eventengine.Incident, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 	inc, err := scanIncident(d.Pool.QueryRow(ctx, `SELECT `+incidentCols+` FROM incidents
-		WHERE room_id=$1 AND room_zone=$2 AND family=$3 AND lifecycle <> 'resolved'
+		WHERE room_id=$1 AND room_zone=$2 AND event_type=$3 AND lifecycle <> 'resolved'
 		  AND $4 >= start_ts - make_interval(secs => $5) AND $4 <= end_ts + make_interval(secs => $5)
-		ORDER BY start_ts DESC LIMIT 1`, roomID, roomZone, family, start, gap.Seconds()))
+		ORDER BY start_ts DESC LIMIT 1`, roomID, roomZone, eventType, start, gap.Seconds()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

@@ -18,7 +18,10 @@ TOKEN = "s3cret-token"
 
 class FakeCore:
     """Records accepted lines. `script` is a list of per-request behaviours:
-    an int status, ("bad", n) = 400 with accepted=n, or "hang" (sleep)."""
+    an int status; ("bad", n) = old-style 400 with accepted=n and no `line`;
+    ("bad_line", line, ignored) = v2 400; ("busy", line) = v2 503 after core
+    queued the first `line` lines; ("ignore", k) = 200 with the last k lines
+    ignored (unknown camera); or "hang" (sleep)."""
 
     def __init__(self):
         self.lines: list[dict] = []
@@ -45,11 +48,27 @@ class FakeCore:
                 if action == "hang":
                     time.sleep(1.5)
                     return
-                if isinstance(action, tuple):
+                if isinstance(action, tuple) and action[0] == "bad":
                     n = action[1]
                     with core.lock:
                         core.lines.extend(lines[:n])
                     return self._reply(400, {"error": f"line {n + 1}: bad", "accepted": n})
+                if isinstance(action, tuple) and action[0] == "bad_line":
+                    _, line, ign = action
+                    with core.lock:
+                        core.lines.extend(lines[:line - ign])  # the ignored ones are not stored
+                    return self._reply(400, {"error": "bad", "accepted": line - ign, "ignored": ign, "line": line})
+                if isinstance(action, tuple) and action[0] == "busy":
+                    line = action[1]
+                    with core.lock:
+                        core.lines.extend(lines[:line])
+                    return self._reply(503, {"error": "engine backlog full", "accepted": line, "ignored": 0,
+                                             "line": line})
+                if isinstance(action, tuple) and action[0] == "ignore":
+                    k = action[1]
+                    with core.lock:
+                        core.lines.extend(lines[:len(lines) - k])
+                    return self._reply(200, {"accepted": len(lines) - k, "ignored": k})
                 if action != 200:
                     return self._reply(action, {"error": "busy"})
                 with core.lock:
@@ -153,6 +172,52 @@ def test_bad_line_is_dropped_and_rest_retried(core):
     s.close()
     assert [l["seq"] for l in core.lines] == [0, 1, 2, 4, 5, 6, 7, 8, 9]
     assert s.rejected_total == 1 and s.written == 9
+
+
+def test_bad_line_uses_line_index_from_v2_reply(core):
+    core.script = [("bad_line", 5, 2)]  # lines 0-4 read (3 accepted, 2 ignored), line 5 bad
+    s = CoreSink(core.url, TOKEN, batch_max=10, backoff=fast_backoff(), start=False)
+    for i in range(10):
+        s.emit(obs(i))
+    s._thread.start()
+    assert wait_for(lambda: s.buffered == 0 and core.requests >= 2)
+    s.close()
+    assert core.requests == 2
+    assert [l["seq"] for l in core.lines] == [0, 1, 2, 6, 7, 8, 9]  # 3,4 ignored by core; 5 dropped; none resent
+    assert s.rejected_total == 1 and s.ignored_total == 2 and s.written == 7
+
+
+def test_503_after_partial_accept_resends_only_the_rest(core):
+    core.script = [("busy", 4), ("busy", 0), ("busy", 2)]
+    s = CoreSink(core.url, TOKEN, batch_max=10, backoff=fast_backoff(), start=False)
+    for i in range(10):
+        s.emit(obs(i))
+    s._thread.start()
+    assert wait_for(lambda: s.buffered == 0 and len(core.lines) == 10)
+    s.close()
+    assert [l["seq"] for l in core.lines] == list(range(10))  # no duplicates, in order
+    assert core.requests == 4 and s.written == 10 and s.failures_total == 3
+
+
+def test_ignored_lines_are_counted_not_resent(core):
+    core.script = [("ignore", 3)]
+    s = CoreSink(core.url, TOKEN, batch_max=10, backoff=fast_backoff(), start=False)
+    for i in range(10):
+        s.emit(obs(i))
+    s._thread.start()
+    assert wait_for(lambda: s.buffered == 0 and core.requests >= 1)
+    s.close()
+    assert core.requests == 1 and s.written == 7 and s.ignored_total == 3
+    assert 'zeoatap_sink_ignored_total{sink="core"} 3' in metrics_text({"cameras": [], "sink": s.status()})
+
+
+def test_nan_observation_is_dropped_not_sent(core):
+    s = CoreSink(core.url, TOKEN, backoff=fast_backoff())
+    s.emit({**obs(0), "tracks": [{"id": "a", "role": "person", "score": float("nan"), "box": [0, 0, 1, 1]}]})
+    s.emit(obs(1))
+    assert wait_for(lambda: len(core.lines) == 1)
+    s.close()
+    assert core.lines[0]["seq"] == 1 and s.invalid_total == 1 and s.emitted_total == 1
 
 
 def test_wrong_token_is_retried_not_dropped_and_not_logged(core):

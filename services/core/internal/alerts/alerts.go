@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/hub"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/hub"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
 const (
@@ -124,7 +126,7 @@ func (d *Dispatcher) deliver(ctx context.Context) {
 			continue
 		}
 		err = d.post(ctx, Payload{IncidentID: inc.ID, Room: inc.RoomID, Level: a.Level, At: time.Now().UTC(),
-			Message: "Review required: possible event in " + inc.RoomID})
+			Message: "Review required: possible " + strings.ReplaceAll(inc.EventType, "_", " ") + " in " + inc.RoomID})
 		if err == nil {
 			if err := d.DB.MarkAlertDelivered(ctx, a.ID); err != nil {
 				d.Log.Error("mark alert delivered", "alert", a.ID, "err", err)
@@ -133,17 +135,20 @@ func (d *Dispatcher) deliver(ctx context.Context) {
 		}
 		cfg := d.Cfg.withDefaults()
 		backoff := cfg.RetryBase << min(a.Attempts, 10)
-		failed, merr := d.DB.MarkAlertAttemptFailed(ctx, a.ID, err.Error(), backoff, cfg.MaxAttempts)
+		// Only a short class is stored and published: the raw error text of a
+		// failed request contains the webhook URL, which may embed a token.
+		class := deliveryErrClass(err)
+		failed, merr := d.DB.MarkAlertAttemptFailed(ctx, a.ID, class, backoff, cfg.MaxAttempts)
 		if merr != nil {
 			d.Log.Error("record alert failure", "alert", a.ID, "err", merr)
 			continue
 		}
-		d.Log.Warn("alert delivery failed", "incident", inc.ID, "attempt", a.Attempts+1, "err", err)
+		d.Log.Warn("alert delivery failed", "incident", inc.ID, "attempt", a.Attempts+1, "err", class)
 		if failed {
 			if err := d.DB.Audit(ctx, "system", "alert_delivery_failed", inc.ID, map[string]any{"channel": ChannelWebhook, "level": a.Level}); err != nil {
 				d.Log.Error("audit", "err", err)
 			}
-			d.Hub.Publish("alert_delivery_failed", map[string]any{"incident_id": inc.ID, "channel": ChannelWebhook, "error": err.Error()})
+			d.Hub.Publish("alert_delivery_failed", map[string]any{"incident_id": inc.ID, "channel": ChannelWebhook, "error": class})
 		}
 	}
 }
@@ -167,7 +172,7 @@ func (d *Dispatcher) post(ctx context.Context, p Payload) error {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned %d", resp.StatusCode)
+		return &statusError{code: resp.StatusCode}
 	}
 	return nil
 }
@@ -198,5 +203,25 @@ func (d *Dispatcher) escalate(ctx context.Context) {
 		if err := d.Raise(ctx, inc, level); err != nil {
 			d.Log.Error("raise escalated alert", "incident", inc.ID, "err", err)
 		}
+	}
+}
+
+type statusError struct{ code int }
+
+func (e *statusError) Error() string { return fmt.Sprintf("HTTP %d", e.code) }
+
+// deliveryErrClass describes a webhook failure without the URL.
+func deliveryErrClass(err error) string {
+	var se *statusError
+	var ne net.Error
+	switch {
+	case errors.As(err, &se):
+		return se.Error()
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
+		return "timeout"
+	case errors.As(err, &ne):
+		return "connection failed"
+	default:
+		return "delivery failed"
 	}
 }

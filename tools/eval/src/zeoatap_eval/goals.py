@@ -1,6 +1,15 @@
-"""Pre-registered acceptance goals (SAFETY_VALIDATION §5) and the go/no-go
-check (§7). Goals are configurable with a JSON file; the defaults below are
-the proposed goals from §5 and are engineering goals, not achieved results.
+"""Pre-registered pilot acceptance goals and the go/no-go check.
+
+Goals are configurable with a JSON file. The defaults below are proposed
+engineering goals for the restaurant pilot, written down before any data is
+scored. They are not achieved results.
+
+Every recall goal is paired with a minimum number of positives (`n_min`)
+that can actually demonstrate it: with n_min positives and zero misses, the
+exact Clopper-Pearson lower bound under the default (two-sided 95%) decision
+reaches the goal. `test_default_goals_are_achievable` checks this, so a goal
+like "recall >= 0.99 with n >= 100" (unachievable: 100/100 only bounds
+recall at 0.964) cannot be pre-registered by mistake.
 """
 
 from __future__ import annotations
@@ -12,36 +21,104 @@ from pathlib import Path
 
 from .stats import clopper_pearson, poisson_rate_interval, rule_of_three_n
 
+# Event types in packages/contracts/API.md (v2).
+EVENT_TYPES = (
+    "after_hours_intrusion",
+    "camera_tamper",
+    "restricted_zone_entry",
+    "person_down",
+    "long_queue",
+    "long_wait",
+    "unattended_post",
+    "pos_no_sale",
+    "pos_refund_no_customer",
+)
+
+# Stratum keys and values; must match ground_truth.schema.json.
+STRATA = {
+    "lighting": ("day", "night", "after_hours_dark"),
+    "crowding": ("empty", "normal", "rush"),
+    "camera_view": ("overhead", "360", "wide"),
+}
+
 
 @dataclass
 class Goal:
     code: str
     stage: str
     recall_lower: float | None = None       # goal on the lower confidence bound of recall
-    n_min: int = 0                           # pre-registered minimum positives
-    fa_per_camera_hour: float | None = None  # goal on false alerts per camera-hour
-    latency_p95_s: float | None = None
+    n_min: int = 0                           # pre-registered minimum positives (overall and per required stratum)
+    fa_per_camera_hour: float | None = None  # goal on false alerts / review prompts per camera-hour
+    latency_p95_s: float | None = None       # goal on p95 of created_at - GT.start
     latency_budget_s: float = 5.0            # matching window after GT.end
-    required_strata: dict[str, list[str]] = field(default_factory=dict)  # e.g. {"lighting": ["day","ir"]}
+    precision_lower: float | None = None     # goal on the lower confidence bound of precision
+    precision_n_min: int = 0                 # pre-registered minimum conclusive incidents
+    required_strata: dict[str, list[str]] = field(default_factory=dict)  # e.g. {"lighting": ["day", "night"]}
     report_only: bool = False                # research signal: never passes
     deployable: bool = True                  # False: not a product feature at all
 
 
 DEFAULT_GOALS: dict[str, Goal] = {
-    "camera_offline": Goal("D1", "Pilot alert", 0.99, 100, 0.01, 10.0, 10.0),
-    "camera_obstructed": Goal("D2", "Pilot alert", 0.99, 100, 0.01, 10.0, 10.0),
-    "adult_in_restricted_zone": Goal("D3", "Pilot alert", 0.90, 60, 0.02, 5.0, 5.0),
-    "infant_off_surface": Goal("A1", "Shadow -> alert", 0.90, 60, 0.005, 5.0, 5.0,
-                               required_strata={"lighting": ["day", "ir"]}),
-    "infant_in_hazard_zone": Goal("D4", "Review", 0.85, 0, 0.05, 30.0, 30.0),
-    "no_visible_movement": Goal("C1", "Review only", 0.80, 0, 0.05, None, 60.0),
-    "infant_not_visible": Goal("C2", "Review only", 0.80, 0, 0.05, None, 60.0),
-    "handling_abrupt": Goal("B1", "Research only", report_only=True, latency_budget_s=5.0),
-    "handling_repetitive": Goal("B2", "Research only", report_only=True, latency_budget_s=5.0),
-    "respiration_estimate": Goal("E1", "Not deployed", report_only=True, deployable=False),
+    # G1. Alert policy (SHADOW until the owner enables it). Night and lights-off are the hard cases.
+    "after_hours_intrusion": Goal(
+        "G1", "Pilot alert (shadow first)", recall_lower=0.95, n_min=72, fa_per_camera_hour=0.01,
+        latency_p95_s=10.0, latency_budget_s=5.0,
+        required_strata={"lighting": ["night", "after_hours_dark"]}),
+    # G3. Fires after 30 s of VIDEO_DEGRADED / CAMERA_UNAVAILABLE. A dark room must not look like a black frame.
+    "camera_tamper": Goal(
+        "G3", "Pilot alert (shadow first)", recall_lower=0.95, n_min=72, fa_per_camera_hour=0.01,
+        latency_p95_s=60.0, latency_budget_s=45.0,
+        required_strata={"lighting": ["day", "after_hours_dark"]}),
+    # D5/G4. Review policy: false review prompts are counted against the FA goal too.
+    "restricted_zone_entry": Goal(
+        "D5", "Pilot review", recall_lower=0.90, n_min=60, fa_per_camera_hour=0.02,
+        latency_p95_s=10.0, latency_budget_s=5.0,
+        required_strata={"lighting": ["day", "night"]}),
+    # F6. Box-aspect heuristic; stays SHADOW in the pilot.
+    "person_down": Goal(
+        "F6", "Shadow (heuristic)", recall_lower=0.80, n_min=30, fa_per_camera_hour=0.02,
+        latency_p95_s=10.0, latency_budget_s=5.0,
+        required_strata={"crowding": ["empty", "normal"], "camera_view": ["overhead", "360"]}),
+    # A4. Operations alerts: precision first (managers stop reading noisy alerts).
+    "long_queue": Goal(
+        "A4", "Pilot alert (operations)", recall_lower=0.70, n_min=30, precision_lower=0.80, precision_n_min=30,
+        latency_p95_s=120.0, latency_budget_s=90.0,
+        required_strata={"crowding": ["rush"]}),
+    "long_wait": Goal(
+        "A4", "Pilot review (operations)", recall_lower=0.70, n_min=30, fa_per_camera_hour=0.05,
+        precision_lower=0.70, precision_n_min=30, latency_p95_s=600.0, latency_budget_s=600.0,
+        required_strata={"crowding": ["normal", "rush"]}),
+    # B4. Operations alert: precision first.
+    "unattended_post": Goal(
+        "B4", "Pilot alert (operations)", recall_lower=0.80, n_min=30, precision_lower=0.80, precision_n_min=30,
+        latency_p95_s=240.0, latency_budget_s=240.0,
+        required_strata={"crowding": ["normal", "rush"]}),
+    # C1. Deterministic from the POS feed: every no_sale must become one review item.
+    # 0.99 needs 368 zero-miss positives two-sided (0.025**(1/368) = 0.99003), 300 one-sided.
+    "pos_no_sale": Goal(
+        "C1", "Pilot review (POS)", recall_lower=0.99, n_min=368, fa_per_camera_hour=0.01,
+        latency_p95_s=30.0, latency_budget_s=30.0),
+    # C3. POS event plus "nobody in customer_side": the vision half fails in a rush (occlusion).
+    "pos_refund_no_customer": Goal(
+        "C3", "Shadow -> alert (POS + vision)", recall_lower=0.90, n_min=60, fa_per_camera_hour=0.02,
+        latency_p95_s=30.0, latency_budget_s=30.0,
+        required_strata={"crowding": ["empty", "normal"]}),
 }
 
 DEFAULT_LATENCY_BUDGET_S = 5.0
+
+
+def validate_goal(et: str, g: Goal) -> None:
+    for key, values in g.required_strata.items():
+        if key not in STRATA:
+            raise ValueError(f"goal {et}: unknown stratum key {key!r} (known: {', '.join(STRATA)})")
+        bad = [v for v in values if v not in STRATA[key]]
+        if bad:
+            raise ValueError(f"goal {et}: unknown {key} value(s) {bad} (known: {', '.join(STRATA[key])})")
+    for name in ("recall_lower", "precision_lower"):
+        v = getattr(g, name)
+        if v is not None and not 0 < v < 1:
+            raise ValueError(f"goal {et}: {name} must be in (0, 1)")
 
 
 def load_goals(path: str | Path | None) -> dict[str, Goal]:
@@ -52,6 +129,8 @@ def load_goals(path: str | Path | None) -> dict[str, Goal]:
             base = asdict(goals[et]) if et in goals else asdict(Goal(code=et, stage="custom"))
             base.update(g)
             goals[et] = Goal(**base)
+    for et, g in goals.items():
+        validate_goal(et, g)
     return goals
 
 
@@ -62,13 +141,30 @@ def min_n_exact(goal: float, confidence: float, sided: str) -> int:
     return math.ceil(math.log(a) / math.log(goal) - 1e-12)
 
 
+def misses_allowed(goal: float, n: int, confidence: float, sided: str) -> int | None:
+    """Most misses (failures) in n for which the lower bound still reaches
+    the goal; None if even 0 misses is not enough."""
+    side = "lower" if sided == "one" else "two"
+    if n <= 0 or clopper_pearson(n, n, confidence, side).lower < goal:
+        return None
+    k = 0
+    while k + 1 <= n and clopper_pearson(n - k - 1, n, confidence, side).lower >= goal:
+        k += 1
+    return k
+
+
+def _required(goal: float, n_min: int, confidence: float, sided: str) -> dict:
+    r3 = rule_of_three_n(1 - goal)
+    ex = min_n_exact(goal, confidence, sided)
+    need = max(n_min, r3, ex)
+    return {"n_required": need, "n_min_preregistered": n_min, "n_rule_of_three": r3, "n_exact_zero_miss": ex,
+            "misses_allowed_at_n_required": misses_allowed(goal, need, confidence, sided)}
+
+
 def required_n(g: Goal, confidence: float, sided: str) -> dict:
     if g.recall_lower is None:
         return {"n_required": None}
-    r3 = rule_of_three_n(1 - g.recall_lower)
-    ex = min_n_exact(g.recall_lower, confidence, sided)
-    return {"n_required": max(g.n_min, r3, ex), "n_min_preregistered": g.n_min,
-            "n_rule_of_three": r3, "n_exact_zero_miss": ex}
+    return _required(g.recall_lower, g.n_min, confidence, sided)
 
 
 def required_hours(fa_goal: float, confidence: float, sided: str) -> float:
@@ -79,6 +175,25 @@ def required_hours(fa_goal: float, confidence: float, sided: str) -> float:
 
 def _check(name: str, status: str, detail: str, **kw) -> dict:
     return {"check": name, "status": status, "detail": detail, **kw}
+
+
+def _proportion_check(name: str, k: int, n: int, goal: float, n_min: int, confidence: float, sided: str,
+                      what: str) -> dict:
+    side = "lower" if sided == "one" else "two"
+    req = _required(goal, n_min, confidence, sided)
+    lo = clopper_pearson(k, n, confidence, side).lower
+    hi = clopper_pearson(k, n, confidence, "two").upper
+    if n and hi < goal:
+        return _check(name, "FAIL", f"{name} {k}/{n}: even the upper bound {hi:.4f} is below the goal {goal}",
+                      lower_bound=lo, **req)
+    if n < req["n_required"]:
+        return _check(name, "INSUFFICIENT_DATA",
+                      f"n={n} {what} < {req['n_required']} required to claim {name} >= {goal} "
+                      f"(pre-registered {req['n_min_preregistered']}, rule of three {req['n_rule_of_three']}, "
+                      f"exact zero-miss {req['n_exact_zero_miss']})", lower_bound=lo, **req)
+    return _check(name, "PASS" if lo >= goal else "FAIL",
+                  f"{name} {k}/{n}, {sided}-sided {confidence:.0%} lower bound {lo:.4f} vs goal {goal}",
+                  lower_bound=lo, **req)
 
 
 def evaluate_goal(et: str, m: dict, g: Goal | None, confidence: float, sided: str,
@@ -98,22 +213,9 @@ def evaluate_goal(et: str, m: dict, g: Goal | None, confidence: float, sided: st
     side = "lower" if sided == "one" else "two"
     n, tp = m["n_gt"], m["detected"]
     if g.recall_lower is not None:
+        checks.append(_proportion_check("recall", tp, n, g.recall_lower, g.n_min, confidence, sided, "positives"))
         req = required_n(g, confidence, sided)
-        lo = clopper_pearson(tp, n, confidence, side).lower
-        hi = clopper_pearson(tp, n, confidence, "two").upper
-        if n and hi < g.recall_lower:
-            checks.append(_check("recall", "FAIL",
-                                 f"recall {tp}/{n}: even the upper bound {hi:.4f} is below the goal {g.recall_lower}",
-                                 lower_bound=lo, **req))
-        elif n < req["n_required"]:
-            checks.append(_check("recall", "INSUFFICIENT_DATA",
-                                 f"n={n} positives < {req['n_required']} required to claim recall >= {g.recall_lower} "
-                                 f"(pre-registered {req['n_min_preregistered']}, rule of three {req['n_rule_of_three']}, "
-                                 f"exact zero-miss {req['n_exact_zero_miss']})", lower_bound=lo, **req))
-        else:
-            checks.append(_check("recall", "PASS" if lo >= g.recall_lower else "FAIL",
-                                 f"recall {tp}/{n}, {sided}-sided {confidence:.0%} lower bound {lo:.4f} vs goal {g.recall_lower}",
-                                 lower_bound=lo, **req))
+        # Each required stratum needs the same n and bound as the overall goal.
         for key, values in g.required_strata.items():
             for v in values:
                 s = m["strata"].get(key, {}).get(v, {"n_gt": 0, "detected": 0})
@@ -124,7 +226,11 @@ def evaluate_goal(et: str, m: dict, g: Goal | None, confidence: float, sided: st
                     st = "PASS" if slo >= g.recall_lower else "FAIL"
                 checks.append(_check(f"stratum {key}={v}", st,
                                      f"{s['detected']}/{s['n_gt']}, lower bound {slo:.4f}; needs n >= {req['n_required']} "
-                                     f"and bound >= {g.recall_lower}", lower_bound=slo))
+                                     f"and bound >= {g.recall_lower}", lower_bound=slo, n_required=req["n_required"]))
+    if g.precision_lower is not None:
+        checks.append(_proportion_check("precision", m["true_positive_incidents"], m["incidents"],
+                                        g.precision_lower, g.precision_n_min, confidence, sided,
+                                        "conclusive incidents"))
     overall = m["recall"]
     if overall is not None:
         low = []
@@ -173,11 +279,12 @@ def evaluate_goal(et: str, m: dict, g: Goal | None, confidence: float, sided: st
 
 
 MANUAL_CHECKS = [
-    "Event definition approved by the safety lead + childcare domain expert",
-    "Shadow mode completed with required camera-hours",
-    "Failure-injection suite passes (TESTING_STRATEGY §7)",
-    "Monitoring-unavailable states verified to display correctly",
+    "Event definitions approved by the owner / operations lead for this site",
+    "Shadow period (30-60 days) completed with the required camera-hours before alerting_enabled is set",
+    "Failure-injection suite passes (camera unplugged, covered, frozen; POS feed down)",
+    "Monitoring-unavailable states verified to display correctly (only FULLY_OPERATIONAL is green)",
     "Rollback tested on the target hardware",
-    "Privacy review sign-off for any new data flows",
+    "Privacy/legal review: posted notice, written employee acknowledgment, audio off, no biometrics, no cameras in restrooms or changing areas",
+    "Managers briefed: an alert is a review prompt, never a finding; no discipline from an alert alone",
     "Release manifest signed with validated_for_alerting=true referencing this report",
 ]

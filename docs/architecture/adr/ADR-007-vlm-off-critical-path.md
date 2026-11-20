@@ -1,8 +1,11 @@
-# ADR-007: VLM is local, event-triggered and advisory only
-**Status:** Accepted · **Date:** 2026-10-27
+# ADR-007: VLM is local, advisory and off the critical path
+**Status:** Accepted · **Date:** 2026-10-27, revised 2026-11-20
 
 ## Decision
-A local open-weight VLM (Qwen3-VL-4B/8B, Apache-2.0) may summarize an existing incident clip into a constrained JSON schema. It cannot create, escalate or close incidents, and it is never required for an alert. No continuous video goes to any external provider.
+No alert depends on a vision-language model. A local open-weight VLM (e.g. Qwen3-VL, Apache-2.0) may later:
+1. power **natural-language search** over incidents and clips for complaint investigation (playbook H4: "show me the 2:15 pm order at register 1") — combined with the existing `pos_ref` search;
+2. summarise an existing incident clip in a constrained schema.
+It cannot create, escalate or close incidents. No continuous video goes to an external provider.
 
 ## Ship condition
-An A/B test shows reduced reviewer time without lower disposition accuracy (Experiment E5).
+Measured reduction in time-to-find / time-to-disposition without more wrong dispositions, and a privacy review of any search index (an index of footage is itself personal data).

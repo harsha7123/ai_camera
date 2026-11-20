@@ -1,64 +1,50 @@
 # Testing Strategy
 
-**Date:** 2026-10-27
+**Date:** 2026-11-20
 
-## 1. Test pyramid
+## 1. Test levels
 
 | Level | Scope | Tools | Runs |
 |---|---|---|---|
-| Unit | Rules, state machine, dedup, idempotency, retention, RBAC policy | Go `testing`, pytest, Vitest | Every commit |
-| Contract | Observation schema compatibility between vision-worker and core | JSON Schema / protobuf compatibility checks | Every commit |
-| Integration | core + Postgres, vision-worker + RTSP simulator | docker compose, testcontainers | Every PR |
-| Video replay | Recorded/synthetic videos → full pipeline → incidents compared with golden files | RTSP simulator (GStreamer `rtsp-server` / MediaMTX) | Nightly |
-| Model tests | Accuracy on frozen validation set, regression vs. previous release, latency on target GPU | Benchmark harness | Per model release |
-| Load | N cameras × fps sustained, burst candidates | Simulator fan-out | Weekly + pre-release |
-| Security | SAST (gosec, semgrep), dependency scan (Grype/Trivy), DAST (ZAP), pen test | CI + external | Per PR / pre-pilot |
-| Failure injection | See §7 | toxiproxy, `tc netem`, kill -9, disk-fill, fake NVML errors | Nightly + pre-release |
-| E2E acceptance | User stories US-01..US-10 | Playwright | Pre-release |
+| Unit | Each rule (trigger, duration, business-hours gating, staff exclusion, INCONCLUSIVE on health loss); staff inference; schedule incl. overnight and DST; count_line direction; access-log visits; POS dedupe and −20 s/+5 s window; RBAC; retention; audit chain | Go `testing`, pytest, Vitest | Every commit |
+| Contract | Observation schema; POSEvent NDJSON; API.md shapes and status codes | JSON Schema, Go API tests | Every commit |
+| Integration | core + Postgres (ingest → incident → clip → playback); worker + RTSP simulator | `go test -race`, MediaMTX | Every PR |
+| Replay | Recorded/synthetic observation + POS streams → `cmd/replay` → incidents vs. golden files | replay CLI, tools/eval | Nightly |
+| E2E UI | Overview, exception queue, incident detail, dispositions, traffic heat map, access log, admin, role visibility (SHADOW hidden from staff/manager) | Playwright against mock API; smoke against real core | Pre-release |
+| Load / soak | N cameras at 15/5 fps; POS burst; engine backlog `503` + resend | tools/soak | Weekly / pre-release |
+| Security | RBAC matrix, admin cannot fetch clips, clip token expiry and reuse, login throttling `429`, CSRF `415`, session end on role change, webhook URL never in errors, internal endpoints reject missing/wrong token | Go tests, ZAP later | Per PR |
+| Accuracy | Event-level metrics per [SAFETY_VALIDATION](SAFETY_VALIDATION.md) | tools/eval | Per release / pilot |
 
-## 2. Unit tests (core)
-- Each rule: trigger, min-duration, gating → INCONCLUSIVE, merge window.
-- Idempotency: the same observation stream replayed twice → identical incident set.
-- Dedup: two cameras, the same room-zone event within merge gap → 1 incident, 2 evidence refs.
-- Health: no observation > 3 s → CAMERA_UNAVAILABLE. Green only when heartbeat fresh.
-- `validated_for_alerting=false` → never dispatches an alert.
+## 2. Golden scenarios (synthetic or staged with consent)
 
-## 3. Video replay tests
-Golden scenarios (synthetic or consented): empty room, adult enters restricted zone, manikin roll-off, adult lifts infant (hard negative), camera unplugged, lights off (IR switch), lens covered.
+Empty restaurant after close; person enters after close (lights on/off); staff behind counter vs. customer in front; queue builds to 5 for 60 s; one guest waits 8 min; register post empty 3 min while open; refund with and without a customer at the counter; no-sale; duplicate POS event id; POS event for unknown register; person crouching/kneeling/sitting on floor (hard negatives for `person_down`); lens covered; camera unplugged; visitor walking in vs. out across the door line; cooler visit by staff vs. non-staff.
 
-## 4. Model tests
-Metrics per SAFETY_VALIDATION §4 with CI. Release blocked if recall's lower bound drops > 2 pts or FA/camera-hour rises > 20% vs. the previous release.
+## 3. Failure injection
 
-## 5. Load tests
-Measure: max cameras at protected-fps policy with < 1% drops, p95 observation latency, GPU memory headroom. Results fill COST_AND_DEPLOYMENT variables.
-
-## 6. Security tests
-Auth bypass, IDOR on clip IDs, token expiry, RBAC matrix enforcement, secrets-in-logs scan, TLS config, egress allow-list verification, update-signature tampering.
-
-## 7. Failure-injection matrix
 | Fault | Injection | Expected |
 |---|---|---|
-| Camera disconnect | Drop RTSP | CAMERA_UNAVAILABLE ≤ 3 s. UI red ≤ 5 s |
-| Frozen stream | Repeat frame | Frozen detection ≤ 10 s |
-| Packet loss 5% | netem | DEGRADED if drop thr exceeded |
-| GPU worker crash | kill -9 | AI_UNAVAILABLE, restart, recovery logged |
-| OOM | cgroup limit | Same |
-| DB down | stop postgres | Incidents buffered in WAL and replayed, zero loss |
-| Internet down | block egress | Local alerts continue. "Remote notifications offline" |
-| Push provider 500s | mock | Retries → fallback → ops alert |
-| Disk full | fallocate | Purge expired, alert, evidence state |
-| Clock skew 5 s | fake camera NTP | CLOCK_DRIFT, cross-cam merge disabled |
-| Bad model hash | corrupt file | Refuse to start, alert |
-| Bad config | invalid YAML | Keep last-known-good |
+| Camera disconnect | Stop RTSP | CAMERA_UNAVAILABLE after > 3 s; `camera_tamper` after 30 s; never green |
+| Lens covered / frozen / black | Synthetic frames | VIDEO_DEGRADED; `camera_tamper` after 30 s |
+| Worker crash | kill -9 | AI_UNAVAILABLE / stale → not green; restart |
+| Engine backlog | Flood observations | `503` with `line`; sender resumes from `line`; no loss, no duplicates |
+| Bad NDJSON line | Malformed line N | `400` with `line` = N; earlier lines accepted |
+| POS resend | Same ids twice | Second copy ignored |
+| POS clock skew | Shift `ts` ±10 s | Documented false-positive behaviour; skew alarm (roadmap) |
+| DB down | Stop Postgres | `/readyz` 503; overview `database: error` |
+| Audit write fails | Fault DB | Clip media `503`; no unaudited playback |
+| Webhook 500 / timeout | Mock relay | Retries; `alert_delivery_failed` with short class only; `alerts_health.failed` |
+| Disk full in vault | Fill | `clip_failed`; `evidence: error` |
+| Retention | Advance clock | Clip deleted; media `410`; held clip kept |
 
-## 8. Executed in this repository (updated 2026-10-31)
+## 4. Executed
+
 | Suite | Command | Result |
 |---|---|---|
-| Core (engine, store, evidence, alerts, server API/RBAC/e2e) | `cd services/core && GOTOOLCHAIN=local go test -race ./...` (Postgres on :15432) | all packages pass |
-| vision-worker (unit, sink, clip API, detection smoke, live RTSP via MediaMTX) | `cd services/vision-worker && uv run pytest -q` | 53 passed |
-| Dashboard | `cd apps/web && npx tsc --noEmit && npx eslint . && npx next build && node e2e/run.mjs` | clean; 21/21 e2e passed |
-| Eval harness | `cd tools/eval && uv run pytest -q` | 45 passed |
-| Soak tooling | `cd tools/soak && uv run pytest -q`; runs in [tools/soak/RESULTS.md](../tools/soak/RESULTS.md) | 2 passed; 14 measured runs |
-| GPU inference benchmark | see [BENCHMARK_RESULTS](BENCHMARK_RESULTS.md) | speed only |
+| Core (engine, store, evidence, alerts, server API/RBAC/e2e) | `cd services/core && go test -race ./...` | see README |
+| vision-worker | `cd services/vision-worker && uv run pytest -q` | see README |
+| Dashboard | `cd apps/web && npx tsc --noEmit && npx eslint . && npx next build && node e2e/run.mjs` | see README |
+| Eval harness | `cd tools/eval && uv run pytest -q` | see README |
+| Soak tooling | `cd tools/soak && uv run pytest -q` | see README |
+| GPU inference benchmark | [BENCHMARK_RESULTS](BENCHMARK_RESULTS.md) | speed only |
 
-All inputs are synthetic test patterns or a public-domain photo of adults. **No real camera, no infant footage and no accuracy measurement yet.**
+All inputs are synthetic. **No real restaurant camera, POS feed or accuracy measurement yet.**

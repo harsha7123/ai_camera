@@ -3,7 +3,7 @@ import json
 import pytest
 
 from helpers import T0, ev, gt, inc, iso, session, write_incidents
-from zeoatap_eval.goals import Goal, load_goals
+from zeoatap_eval.goals import DEFAULT_GOALS, Goal, load_goals, min_n_exact, misses_allowed, required_n
 from zeoatap_eval.metrics import EvalConfig, evaluate
 from zeoatap_eval.model import load_ground_truth, load_incidents, states_from_observations
 
@@ -15,7 +15,7 @@ def run(tmp_path, gtdoc, incs, states=None, **cfg):
     return evaluate(g, i, c, states)
 
 
-def m(r, et="infant_off_surface"):
+def m(r, et="after_hours_intrusion"):
     return r["per_event_type"][et]
 
 
@@ -53,7 +53,7 @@ def test_duplicates_can_be_counted_as_false_alerts(tmp_path):
 def test_merged_incident_is_not_a_duplicate(tmp_path):
     # Replay emits incident_created then incident_merged for the same id: one incident.
     p = tmp_path / "replay.jsonl"
-    base = {"id": "INC-1", "event_type": "infant_off_surface", "start": iso(100.0), "cameras": ["cam1"],
+    base = {"id": "INC-1", "event_type": "after_hours_intrusion", "start": iso(100.0), "cameras": ["cam1"],
             "status": "SHADOW", "room_zone": "z", "source": "x"}
     p.write_text("\n".join(json.dumps(l) for l in [
         {"kind": "state_change", "camera_id": "cam1", "state": "FULLY_OPERATIONAL"},
@@ -72,11 +72,11 @@ def test_merged_incident_is_not_a_duplicate(tmp_path):
 # --------------------------------------------------------------------------- type, window, latency
 
 def test_wrong_type_is_a_miss_and_a_false_positive(tmp_path):
-    r = run(tmp_path, gt(session([ev(100, 102)])), [inc(100, 102, event_type="adult_in_restricted_zone")])
-    a1, d3 = m(r), m(r, "adult_in_restricted_zone")
-    assert a1["detected"] == 0 and a1["missed"] == 1 and a1["recall"] == 0.0
-    assert a1["confusion"] == {"wrong_type:adult_in_restricted_zone": 1}
-    assert d3["false_positives"] == 1 and d3["n_gt"] == 0
+    r = run(tmp_path, gt(session([ev(100, 102)])), [inc(100, 102, event_type="restricted_zone_entry")])
+    g1, d5 = m(r), m(r, "restricted_zone_entry")
+    assert g1["detected"] == 0 and g1["missed"] == 1 and g1["recall"] == 0.0
+    assert g1["confusion"] == {"wrong_type:restricted_zone_entry": 1}
+    assert d5["false_positives"] == 1 and d5["n_gt"] == 0
 
 
 def test_matching_window(tmp_path):
@@ -85,7 +85,7 @@ def test_matching_window(tmp_path):
     assert m(run(tmp_path, g, [inc(99.1, 99.5)]))["detected"] == 1
     # Starts 1.5 s before and ends before GT.start: no match.
     assert m(run(tmp_path, g, [inc(98.5, 99.5)]))["detected"] == 0
-    # Starts after GT.end but within latency_budget (A1 default 5 s): match.
+    # Starts after GT.end but within latency_budget (intrusion default 5 s): match.
     assert m(run(tmp_path, g, [inc(106.5, 107)]))["detected"] == 1
     # Starts after GT.end + budget: no match, and it is a false alert.
     r = run(tmp_path, g, [inc(107.5, 108)])
@@ -141,23 +141,41 @@ def test_inconclusive_is_counted_separately(tmp_path):
     assert x["inconclusive_incidents_without_gt"] == 1
     assert x["inconclusive_incidents_on_detected_events"] == 1
     assert x["false_positives"] == 0 and x["incidents"] == 2  # INCONCLUSIVE never scored as FP or TP
-    assert x["confusion"] == {"infant_off_surface": 2, "INCONCLUSIVE": 1}
+    assert x["confusion"] == {"after_hours_intrusion": 2, "INCONCLUSIVE": 1}
 
 
-def test_false_alerts_only_count_alert_severity(tmp_path):
+def test_false_alerts_count_every_conclusive_status_by_default(tmp_path):
     incs = [inc(1000, 1001, status="SHADOW"), inc(1500, 1501, status="ALERTED"),
-            inc(2000, 2001, status="REVIEW_QUEUED")]
+            inc(2000, 2001, status="REVIEW_QUEUED"), inc(2500, 2501, status="INCONCLUSIVE")]
     x = m(run(tmp_path, gt(session([], span=(0, 7200))), incs))
-    assert x["false_positives"] == 3 and x["false_alerts"] == 2
+    assert x["false_positives"] == 3 and x["false_alerts"] == 3
     assert x["camera_hours_operational"] == pytest.approx(2.0)
-    assert x["false_alerts_per_camera_hour"] == pytest.approx(1.0)
+    assert x["false_alerts_per_camera_hour"] == pytest.approx(1.5)
+    # --alert-statuses narrows it.
+    x = m(run(tmp_path, gt(session([], span=(0, 7200))), incs, alert_statuses=("ALERTED", "SHADOW")))
+    assert x["false_positives"] == 3 and x["false_alerts"] == 2
+
+
+def test_review_queued_false_positive_can_fail_a_review_type_goal(tmp_path):
+    # restricted_zone_entry is a review-policy rule: its incidents are REVIEW_QUEUED.
+    # A false review prompt must count against its false-alert goal.
+    et = "restricted_zone_entry"
+    sess = [session([], sid=f"S{k}", camera=f"c{k}", span=(0, 50 * 3600)) for k in range(8)]  # 400 camera-hours
+    incs = [inc(1000 * j, 1000 * j + 3, event_type=et, status="REVIEW_QUEUED", cameras=("c0",)) for j in range(1, 11)]
+    r = run(tmp_path, gt(*sess), incs)
+    x = m(r, et)
+    assert x["false_alerts"] == 10
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"][et]["checks"]}
+    # 10 in 400 h: enough hours (184 needed for 0.02), two-sided upper bound 0.046 > 0.02.
+    assert chk["false alerts / camera-hour"]["status"] == "FAIL"
+    assert chk["false alerts / camera-hour"]["upper_bound"] == pytest.approx(0.046, abs=1e-3)
 
 
 def test_false_alerts_on_hard_negatives_are_labelled(tmp_path):
-    s = session([], hard_negatives=[{"id": "H1", "label": "adult_lifts_infant", "start_s": 50, "end_s": 55}])
+    s = session([], hard_negatives=[{"id": "H1", "label": "cleaning_crew", "start_s": 50, "end_s": 55}])
     r = run(tmp_path, gt(s), [inc(52, 53)])
     assert m(r)["false_positives_on_hard_negatives"] == 1
-    assert r["false_positives"][0]["hard_negative"] == "adult_lifts_infant"
+    assert r["false_positives"][0]["hard_negative"] == "cleaning_crew"
 
 
 def _obs_file(tmp_path, cam, times, ai=True, degraded_at=()):
@@ -196,28 +214,18 @@ def test_ai_unavailable_hours_do_not_count(tmp_path):
     assert r["per_event_type"] == {}
 
 
-def test_camera_faults_from_states_are_scored_as_d1(tmp_path):
-    times = [k / 5 for k in range(0, 100 * 5)] + [130 + k / 5 for k in range(0, 100 * 5)]
-    st = states_from_observations(_obs_file(tmp_path, "cam1", times))
-    g = gt(session([ev(100, 130, event_type="camera_offline", eid="F1")], span=(0, 230)))
-    r = run(tmp_path, g, [], states=st)
-    x = m(r, "camera_offline")
-    assert x["detected"] == 1
-    assert x["latency"]["median_s"] == pytest.approx(2.8 + 0.0, abs=0.01)  # last frame 99.8 + 3 s - 100
-
-
 def test_strata_breakdown_and_80_percent_rule(tmp_path):
     day = [ev(100 * k, 100 * k + 2, conditions={"lighting": "day"}) for k in range(1, 11)]
-    ir = [ev(5000 + 100 * k, 5000 + 100 * k + 2, conditions={"lighting": "ir"}) for k in range(1, 11)]
+    ir = [ev(5000 + 100 * k, 5000 + 100 * k + 2, conditions={"lighting": "night"}) for k in range(1, 11)]
     incs = [inc(e["start_s"], e["end_s"]) for e in day] + [inc(e["start_s"], e["end_s"]) for e in ir[:5]]
     r = run(tmp_path, gt(session(day + ir, span=(0, 7200))), incs)
     x = m(r)
     assert x["strata"]["lighting"]["day"]["recall"] == 1.0
-    assert x["strata"]["lighting"]["ir"]["recall"] == 0.5
+    assert x["strata"]["lighting"]["night"]["recall"] == 0.5
     assert x["recall"] == 0.75
-    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["infant_off_surface"]["checks"]}
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["checks"]}
     assert chk["strata >= 80% of overall recall"]["status"] == "FAIL"  # 0.5 < 0.8 * 0.75
-    assert "lighting=ir" in chk["strata >= 80% of overall recall"]["detail"]
+    assert "lighting=night" in chk["strata >= 80% of overall recall"]["detail"]
 
 
 # --------------------------------------------------------------------------- go / no-go
@@ -226,7 +234,7 @@ def _goal(**kw):
     base = dict(code="T", stage="test", recall_lower=0.90, n_min=0, fa_per_camera_hour=None,
                 latency_p95_s=None, latency_budget_s=5.0)
     base.update(kw)
-    return {"infant_off_surface": Goal(**base)}
+    return {"after_hours_intrusion": Goal(**base)}
 
 
 def _perfect(n, spacing=100):
@@ -241,7 +249,7 @@ def test_zero_misses_in_30_is_not_enough_for_a_90_percent_two_sided_claim(tmp_pa
     x = m(r)
     assert x["missed_event_rate_ci95"]["upper"] == pytest.approx(0.1157, abs=5e-5)
     assert x["missed_event_rate_rule_of_three_upper"] == pytest.approx(0.1)
-    v = r["go_no_go"]["per_event_type"]["infant_off_surface"]
+    v = r["go_no_go"]["per_event_type"]["after_hours_intrusion"]
     assert v["verdict"] == "INSUFFICIENT_DATA"
     assert v["checks"][0]["n_required"] == 36  # the exact two-sided bound needs 36
     assert r["go_no_go"]["decision"] == "NO-GO"
@@ -250,19 +258,19 @@ def test_zero_misses_in_30_is_not_enough_for_a_90_percent_two_sided_claim(tmp_pa
 def test_one_sided_decision_needs_rule_of_three_n(tmp_path):
     gts, incs = _perfect(30)
     r = run(tmp_path, gt(session(gts, span=(0, 4000))), incs, goals=_goal(), decision_sided="one")
-    v = r["go_no_go"]["per_event_type"]["infant_off_surface"]
+    v = r["go_no_go"]["per_event_type"]["after_hours_intrusion"]
     assert v["verdict"] == "PASS"  # 0.05**(1/30) = 0.905 >= 0.90 with n = 30 = rule of three
     assert r["go_no_go"]["decision"] == "GO"
     gts, incs = _perfect(29)
     r = run(tmp_path, gt(session(gts, span=(0, 4000))), incs, goals=_goal(), decision_sided="one")
     # 29 is enough for the exact one-sided bound (0.9018) but below the rule of three: refuse.
-    assert r["go_no_go"]["per_event_type"]["infant_off_surface"]["verdict"] == "INSUFFICIENT_DATA"
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "INSUFFICIENT_DATA"
 
 
 def test_small_n_never_passes_even_with_perfect_results(tmp_path):
     gts, incs = _perfect(3)
     r = run(tmp_path, gt(session(gts)), incs, goals=_goal(recall_lower=0.5))
-    v = r["go_no_go"]["per_event_type"]["infant_off_surface"]
+    v = r["go_no_go"]["per_event_type"]["after_hours_intrusion"]
     assert m(r)["recall"] == 1.0
     assert v["verdict"] == "INSUFFICIENT_DATA"  # rule of three: 3/(1-0.5) = 6 positives needed
     assert v["checks"][0]["n_rule_of_three"] == 6
@@ -271,43 +279,43 @@ def test_small_n_never_passes_even_with_perfect_results(tmp_path):
 def test_preregistered_n_and_pass(tmp_path):
     gts, incs = _perfect(60)
     r = run(tmp_path, gt(session(gts, span=(0, 7000))), incs, goals=_goal(n_min=60, latency_p95_s=5.0))
-    assert r["go_no_go"]["per_event_type"]["infant_off_surface"]["verdict"] == "PASS"
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "PASS"
     assert r["go_no_go"]["decision"] == "GO"
     r = run(tmp_path, gt(session(gts[:59], span=(0, 7000))), incs[:59], goals=_goal(n_min=60))
-    assert r["go_no_go"]["per_event_type"]["infant_off_surface"]["verdict"] == "INSUFFICIENT_DATA"
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "INSUFFICIENT_DATA"
 
 
 def test_recall_far_below_goal_fails_regardless_of_n(tmp_path):
     gts, incs = _perfect(10)
     r = run(tmp_path, gt(session(gts)), incs[:2], goals=_goal(n_min=60))
-    assert r["go_no_go"]["per_event_type"]["infant_off_surface"]["verdict"] == "FAIL"
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "FAIL"
 
 
 def test_false_alert_goal_needs_enough_camera_hours(tmp_path):
     gts, incs = _perfect(60)
     goals = _goal(fa_per_camera_hour=0.01)
     r = run(tmp_path, gt(session(gts, span=(0, 7000))), incs, goals=goals)
-    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["infant_off_surface"]["checks"]}
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["checks"]}
     assert chk["false alerts / camera-hour"]["status"] == "INSUFFICIENT_DATA"  # 1.9 h << 369 h
     # 400 camera-hours (10 sessions x 40 h), 0 false alerts: the two-sided bound 3.69/400 < 0.01.
     sess = [session(gts if k == 0 else [], sid=f"S{k}", camera="cam1" if k == 0 else f"c{k}", span=(0, 40 * 3600))
             for k in range(10)]
     r = run(tmp_path, gt(*sess), incs, goals=goals)
-    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["infant_off_surface"]["checks"]}
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["checks"]}
     assert chk["false alerts / camera-hour"]["status"] == "PASS"
     # Two false alerts in the same hours: upper bound 7.22/400 = 0.018 > 0.01 -> FAIL.
     r = run(tmp_path, gt(*sess), incs + [inc(9000, 9001), inc(9500, 9501)], goals=goals)
-    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["infant_off_surface"]["checks"]}
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["checks"]}
     assert chk["false alerts / camera-hour"]["status"] == "FAIL"
 
 
 def test_required_lighting_strata(tmp_path):
     gts, incs = _perfect(60)
     r = run(tmp_path, gt(session(gts, span=(0, 7000))), incs,
-            goals=_goal(required_strata={"lighting": ["day", "ir"]}))
-    v = r["go_no_go"]["per_event_type"]["infant_off_surface"]
+            goals=_goal(required_strata={"lighting": ["day", "night"]}))
+    v = r["go_no_go"]["per_event_type"]["after_hours_intrusion"]
     st = {c["check"]: c["status"] for c in v["checks"]}
-    assert st["stratum lighting=day"] == "PASS" and st["stratum lighting=ir"] == "INSUFFICIENT_DATA"
+    assert st["stratum lighting=day"] == "PASS" and st["stratum lighting=night"] == "INSUFFICIENT_DATA"
     assert v["verdict"] == "INSUFFICIENT_DATA"
 
 
@@ -315,7 +323,7 @@ def test_mock_source_can_never_pass(tmp_path):
     gts, _ = _perfect(60)
     incs = [inc(100 * k + 0.1, 100 * k + 2, created=100 * k + 1, source="MOCK") for k in range(1, 61)]
     r = run(tmp_path, gt(session(gts, span=(0, 7000))), incs, goals=_goal())
-    assert r["go_no_go"]["per_event_type"]["infant_off_surface"]["verdict"] == "INVALID_SOURCE"
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "INVALID_SOURCE"
     assert r["go_no_go"]["decision"] == "NO-GO"
 
 
@@ -330,17 +338,147 @@ def test_unlocked_or_unadjudicated_ground_truth_blocks_go(tmp_path):
 
 
 def test_research_only_types_are_report_only(tmp_path):
-    r = run(tmp_path, gt(session([ev(100, 103, event_type="handling_abrupt")])),
-            [inc(100, 103, event_type="handling_abrupt")])
-    assert r["go_no_go"]["per_event_type"]["handling_abrupt"]["verdict"] == "REPORT_ONLY"
+    r = run(tmp_path, gt(session([ev(100, 103)])), [inc(100, 103)], goals=_goal(report_only=True))
+    assert r["go_no_go"]["per_event_type"]["after_hours_intrusion"]["verdict"] == "REPORT_ONLY"
     assert r["go_no_go"]["release_types"] == []
     assert r["go_no_go"]["decision"] == "NO-GO"
 
 
 def test_goals_file_overrides_defaults(tmp_path):
     p = tmp_path / "goals.json"
-    p.write_text(json.dumps({"goals": {"infant_off_surface": {"recall_lower": 0.95},
+    p.write_text(json.dumps({"goals": {"after_hours_intrusion": {"recall_lower": 0.90},
                                        "custom_event": {"recall_lower": 0.5, "latency_budget_s": 2}}}))
     g = load_goals(p)
-    assert g["infant_off_surface"].recall_lower == 0.95 and g["infant_off_surface"].n_min == 60
+    assert g["after_hours_intrusion"].recall_lower == 0.90 and g["after_hours_intrusion"].n_min == 72
     assert g["custom_event"].latency_budget_s == 2
+
+
+# --------------------------------------------------------------------------- restaurant goals and bug fixes
+
+@pytest.mark.parametrize("sided", ["two", "one"])
+def test_default_goals_are_achievable(sided):
+    # Every pre-registered n must be able to demonstrate its goal with zero misses
+    # (no "0.99 with n >= 100" goals: 100/100 only bounds recall at 0.964).
+    for et, g in DEFAULT_GOALS.items():
+        if g.recall_lower is not None:
+            assert g.n_min >= min_n_exact(g.recall_lower, 0.95, sided), et
+            assert misses_allowed(g.recall_lower, required_n(g, 0.95, sided)["n_required"], 0.95, sided) is not None
+        if g.precision_lower is not None:
+            assert g.precision_n_min >= min_n_exact(g.precision_lower, 0.95, sided), et
+
+
+def test_pos_no_sale_needs_368_two_sided_and_300_one_sided():
+    g = DEFAULT_GOALS["pos_no_sale"]
+    assert required_n(g, 0.95, "two")["n_exact_zero_miss"] == 368
+    assert required_n(g, 0.95, "one")["n_exact_zero_miss"] == 299
+    assert required_n(g, 0.95, "one")["n_rule_of_three"] == 300
+    assert misses_allowed(0.99, 300, 0.95, "two") is None  # 300/300 two-sided: lower bound 0.9878 < 0.99
+    assert misses_allowed(0.99, 368, 0.95, "two") == 0
+
+
+def test_every_vision_goal_has_stratum_requirements():
+    vision = [et for et in DEFAULT_GOALS if et != "pos_no_sale"]  # no_sale is POS-only
+    for et in vision:
+        assert DEFAULT_GOALS[et].required_strata, et
+
+
+def test_unknown_stratum_value_in_goals_is_rejected(tmp_path):
+    p = tmp_path / "goals.json"
+    p.write_text(json.dumps({"goals": {"person_down": {"required_strata": {"lighting": ["ir"]}}}}))
+    with pytest.raises(ValueError, match="ir"):
+        load_goals(p)
+
+
+def test_required_strata_enforced_for_every_type_not_just_one(tmp_path):
+    # restricted_zone_entry (default goals) needs n >= 60 in lighting=day AND lighting=night.
+    et = "restricted_zone_entry"
+    gts = [ev(100 * k, 100 * k + 2, event_type=et) for k in range(1, 61)]
+    incs = [inc(100 * k + 0.1, 100 * k + 2, created=100 * k + 4, event_type=et, status="REVIEW_QUEUED")
+            for k in range(1, 61)]
+    r = run(tmp_path, gt(session(gts, span=(0, 7000))), incs)
+    st = {c["check"]: c["status"] for c in r["go_no_go"]["per_event_type"][et]["checks"]}
+    assert st["recall"] == "PASS"
+    assert st["stratum lighting=day"] == "PASS" and st["stratum lighting=night"] == "INSUFFICIENT_DATA"
+    assert r["go_no_go"]["per_event_type"][et]["verdict"] in ("INSUFFICIENT_DATA", "FAIL")
+    # person_down: strata on two keys.
+    et = "person_down"
+    gts = [ev(100 * k, 100 * k + 4, event_type=et, conditions={"crowding": "empty", "camera_view": "360"})
+           for k in range(1, 31)]
+    incs = [inc(100 * k + 0.1, 100 * k + 4, created=100 * k + 3.5, event_type=et) for k in range(1, 31)]
+    r = run(tmp_path, gt(session(gts, span=(0, 4000))), incs)
+    st = {c["check"]: c["status"] for c in r["go_no_go"]["per_event_type"][et]["checks"]}
+    assert st["stratum crowding=empty"] == "PASS" and st["stratum camera_view=360"] == "PASS"
+    assert st["stratum crowding=normal"] == "INSUFFICIENT_DATA"
+    assert st["stratum camera_view=overhead"] == "INSUFFICIENT_DATA"
+
+
+def test_precision_goal(tmp_path):
+    et = "long_queue"
+    gts = [ev(1000 * k, 1000 * k + 120, event_type=et, conditions={"crowding": "rush"}) for k in range(1, 31)]
+    incs = [inc(1000 * k + 1, 1000 * k + 120, created=1000 * k + 61, event_type=et, status="ALERTED")
+            for k in range(1, 31)]
+    r = run(tmp_path, gt(session(gts, span=(0, 32000))), incs)
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"][et]["checks"]}
+    assert chk["precision"]["status"] == "PASS"  # 30/30, lower bound 0.884 >= 0.80
+    # Ten false queue alerts: precision 30/40, lower bound 0.588 < 0.80.
+    noisy = incs + [inc(1000 * k + 500, 1000 * k + 560, event_type=et, status="ALERTED") for k in range(1, 11)]
+    r = run(tmp_path, gt(session(gts, span=(0, 32000))), noisy)
+    chk = {c["check"]: c for c in r["go_no_go"]["per_event_type"][et]["checks"]}
+    assert chk["precision"]["status"] == "FAIL"
+    assert m(r, et)["precision"] == pytest.approx(0.75)
+
+
+def test_same_type_false_positive_is_not_a_wrong_type_confusion(tmp_path):
+    # Same-type incident that ends inside the pre-tolerance but starts too early to match.
+    r = run(tmp_path, gt(session([ev(100, 102)])), [inc(97.0, 99.5)])
+    x = m(r)
+    assert x["detected"] == 0 and x["false_positives"] == 1
+    assert x["confusion"] == {"missed": 1}
+    # A different-type incident there is still a wrong-type confusion.
+    r = run(tmp_path, gt(session([ev(100, 102)])), [inc(97.0, 99.5), inc(100, 101, event_type="person_down")])
+    assert m(r)["confusion"] == {"wrong_type:person_down": 1}
+
+
+def test_pretty_printed_incident_files_load(tmp_path):
+    one = {"id": "INC-1", "event_type": "camera_tamper", "start": iso(10), "end": iso(40), "created_at": iso(41),
+           "cameras": ["cam1"], "status": "ALERTED"}
+    p = tmp_path / "one.json"
+    p.write_text(json.dumps(one, indent=2))
+    got = load_incidents(p)
+    assert len(got) == 1 and got[0].id == "INC-1" and got[0].event_type == "camera_tamper"
+    p.write_text(json.dumps([one, {**one, "id": "INC-2"}], indent=2))
+    assert [i.id for i in load_incidents(p)] == ["INC-1", "INC-2"]
+    p.write_text(json.dumps({"incidents": [one]}, indent=4))
+    assert [i.id for i in load_incidents(p)] == ["INC-1"]
+    # A pretty-printed replay line.
+    p.write_text(json.dumps({"kind": "incident_created", "camera_id": "cam1", "incident": one}, indent=2))
+    assert load_incidents(p)[0].created_at == pytest.approx(T0.timestamp() + 40)
+
+
+def test_incident_confirmed_after_span_end_still_matches_event_near_end(tmp_path):
+    # Tamper starts 20 s before the annotated span ends. The incident (here starting at
+    # 605 s, e.g. a camera that went unavailable only after the cover was fully on) is
+    # confirmed after the span closes but within the 45 s budget: it must still match.
+    et = "camera_tamper"
+    g = gt(session([ev(580, 600, event_type=et, eid="T1")], span=(0, 600)))
+    r = run(tmp_path, g, [inc(605, 640, created=611, event_type=et, status="ALERTED")])
+    assert m(r, et)["detected"] == 1 and r["summary"]["incidents_out_of_scope"] == 0
+    assert m(r, et)["incidents"] == 1 and m(r, et)["precision"] == 1.0
+    # Beyond the budget (45 s after GT.end): still out of scope, not a false alert.
+    r = run(tmp_path, g, [inc(660, 700, event_type=et, status="ALERTED")])
+    assert m(r, et)["detected"] == 0 and r["summary"]["incidents_out_of_scope"] == 1
+    assert m(r, et)["false_positives"] == 0
+
+
+def test_negative_latency_is_rejected_and_flagged(tmp_path):
+    # The incident overlaps the event but was created 10 s before it started: it cannot have detected it.
+    r = run(tmp_path, gt(session([ev(100, 110, eid="G1")])), [inc(95, 110, created=90, iid="EARLY")])
+    x = m(r)
+    assert x["detected"] == 0 and x["false_positives"] == 1
+    assert r["rejected_negative_latency"] == [{"incident_id": "EARLY", "gt_id": "G1",
+                                               "event_type": "after_hours_intrusion", "latency_s": -10.0}]
+    assert any("EARLY" in w and "clock" in w for w in r["warnings"])
+    # Within the pre-tolerance (alignment error) it still matches, with a small negative latency.
+    r = run(tmp_path, gt(session([ev(100, 110)])), [inc(99.5, 110, created=99.5)])
+    assert m(r)["detected"] == 1 and m(r)["latency"]["median_s"] == pytest.approx(-0.5)
+    assert r["rejected_negative_latency"] == []

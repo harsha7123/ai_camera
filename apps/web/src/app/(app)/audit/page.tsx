@@ -29,7 +29,7 @@ function ChainStatus({ a }: { a: AuditResponse }) {
         <h2 id="chain-h">Audit chain broken at entry #{a.broken_at}</h2>
         <p>
           Entry #{a.broken_at} does not match the record before it, so entries from #{a.broken_at} onward cannot be trusted as unaltered. Preserve this device and
-          the database, and follow the facility’s incident procedure (contact your vendor support).
+          the database, and follow the restaurant’s incident procedure (contact your vendor support).
         </p>
       </div>
     </section>

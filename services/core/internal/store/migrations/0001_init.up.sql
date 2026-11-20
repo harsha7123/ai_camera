@@ -1,4 +1,5 @@
--- Core schema for one facility's edge appliance.
+-- Core schema for one restaurant site's edge appliance. A "room" is an area
+-- of the restaurant (dining room, front counter, kitchen, back of house).
 
 CREATE TABLE facilities (
   id          text PRIMARY KEY,
@@ -16,9 +17,10 @@ CREATE TABLE cameras (
   id                  text PRIMARY KEY,
   room_id             text NOT NULL REFERENCES rooms(id),
   name                text NOT NULL,
-  protected           boolean NOT NULL DEFAULT false,  -- raised-surface camera, analyzed at 15 fps
+  priority            boolean NOT NULL DEFAULT false,  -- register/POS camera, analysed at 15 fps
+  staff_only          boolean NOT NULL DEFAULT false,  -- kitchen/back of house: everyone seen is staff
   zones               jsonb NOT NULL DEFAULT '[]',
-  -- Written authorization record (US-05). A camera cannot exist without one.
+  -- Written authorization record. A camera cannot exist without one.
   authorized_by       text NOT NULL CHECK (authorized_by <> ''),
   authorized_at       date NOT NULL,
   authorization_scope text NOT NULL CHECK (authorization_scope <> ''),
@@ -36,7 +38,7 @@ CREATE TABLE users (
   id             bigserial PRIMARY KEY,
   username       text NOT NULL UNIQUE,
   display_name   text NOT NULL,
-  role           text NOT NULL CHECK (role IN ('caregiver','lead','reviewer','admin')),
+  role           text NOT NULL CHECK (role IN ('staff','manager','owner','admin')),
   password_hash  text NOT NULL,
   disabled       boolean NOT NULL DEFAULT false,
   created_at     timestamptz NOT NULL DEFAULT now()
@@ -64,18 +66,20 @@ CREATE TABLE incidents (
   escalation_level   int NOT NULL DEFAULT 0,
   acknowledged_by    text,
   acknowledged_at    timestamptz,
-  disposition        text CHECK (disposition IN ('no_concern','routine_care','false_detection','concern_followed_up','escalated_external','inconclusive')),
+  disposition        text CHECK (disposition IN ('ok','coach','investigate','false_detection','escalated_external','inconclusive')),
   resolved_by        text,
   resolved_at        timestamptz,
   rule_version       text NOT NULL,
   model_versions     jsonb NOT NULL DEFAULT '{}',
   source             text NOT NULL,
   detail             text NOT NULL DEFAULT '',
+  pos_ref            text,                    -- POS ticket the incident is tied to (C1/C3, chargeback evidence)
   retention_deadline timestamptz NOT NULL,
   legal_hold         boolean NOT NULL DEFAULT false,
   created_at         timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX incidents_merge_idx ON incidents (room_id, room_zone, family, start_ts);
+CREATE INDEX incidents_merge_idx ON incidents (room_id, room_zone, event_type, start_ts);
+CREATE INDEX incidents_pos_ref_idx ON incidents (pos_ref) WHERE pos_ref IS NOT NULL;
 CREATE INDEX incidents_open_idx ON incidents (lifecycle, created_at DESC);
 
 CREATE TABLE incident_actions (
@@ -135,3 +139,46 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 CREATE TRIGGER audit_log_no_change BEFORE UPDATE OR DELETE ON audit_log
   FOR EACH ROW EXECUTE FUNCTION audit_log_immutable();
+CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON audit_log
+  FOR EACH STATEMENT EXECUTE FUNCTION audit_log_immutable();
+
+-- Every POS event received, for reconciliation and ticket search. No card data
+-- is ever accepted (ADR-010).
+CREATE TABLE pos_events (
+  id            text PRIMARY KEY,               -- POS-assigned id; duplicates are ignored
+  register_id   text NOT NULL,
+  type          text NOT NULL CHECK (type IN ('sale','no_sale','void','refund','comp','discount')),
+  ts            timestamptz NOT NULL,
+  amount_cents  bigint,
+  ticket_ref    text,
+  employee_ref  text,                           -- the POS's own employee number, never derived from video
+  received_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX pos_events_ts_idx ON pos_events (ts);
+CREATE INDEX pos_events_ticket_idx ON pos_events (ticket_ref) WHERE ticket_ref IS NOT NULL;
+
+-- Secure-zone access log (safe, cash office, walk-in cooler, back door).
+-- Anonymous: a track id is never stored, only the inferred role.
+CREATE TABLE zone_access (
+  id           bigserial PRIMARY KEY,
+  camera_id    text NOT NULL,
+  room_id      text NOT NULL,
+  room_zone    text NOT NULL,
+  zone_id      text NOT NULL,
+  role         text NOT NULL CHECK (role IN ('staff','person','customer')),
+  start_ts     timestamptz NOT NULL,
+  end_ts       timestamptz NOT NULL,
+  after_hours  boolean NOT NULL,
+  UNIQUE (camera_id, zone_id, start_ts)
+);
+CREATE INDEX zone_access_start_idx ON zone_access (start_ts DESC);
+
+-- Foot traffic and occupancy in 15-minute buckets (aggregates only).
+CREATE TABLE traffic_counts (
+  camera_id       text NOT NULL,
+  bucket_start    timestamptz NOT NULL,
+  entries         int NOT NULL DEFAULT 0,
+  exits           int NOT NULL DEFAULT 0,
+  peak_occupancy  int NOT NULL DEFAULT 0,
+  PRIMARY KEY (camera_id, bucket_start)
+);

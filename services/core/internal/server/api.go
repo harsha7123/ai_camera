@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/auth"
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/auth"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
 // maxBody bounds every staff API request body.
@@ -45,8 +46,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/clips/{id}/token", s.require(auth.PermViewClips, s.clipToken))
 	mux.HandleFunc("GET /api/v1/clips/{id}/media", s.clipMedia)
 	mux.HandleFunc("GET /api/v1/events", s.require(auth.PermViewStatus, s.events))
+	mux.HandleFunc("GET /api/v1/analytics/traffic", s.require(auth.PermAnalytics, s.traffic))
+	mux.HandleFunc("GET /api/v1/access-log", s.require(auth.PermAccessLog, s.accessLog))
 	mux.HandleFunc("GET /api/v1/users", s.require(auth.PermAdmin, s.listUsers))
 	mux.HandleFunc("POST /api/v1/users", s.require(auth.PermAdmin, s.createUser))
+	mux.HandleFunc("POST /api/v1/users/{id}", s.require(auth.PermAdmin, s.updateUser))
 	mux.HandleFunc("GET /api/v1/audit", s.require(auth.PermAdmin, s.listAudit))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -69,6 +73,12 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		// The static export needs inline scripts and styles; everything else is
+		// same-origin only, and nothing may frame the dashboard.
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; "+
+			"style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "+
+			"object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 			// JSON-only POSTs plus SameSite=Strict cookies are the CSRF defence.
@@ -160,23 +170,52 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if len(name) > 64 {
 		name = name[:64]
 	}
-	if req.Username == "" || req.Password == "" || len(req.Username) > 64 || len(req.Password) > 256 {
-		s.audit(r.Context(), name, "login_failed", name, map[string]any{"reason": "malformed"})
+	ip := clientIP(r)
+	// Locked keys are refused before the password is checked, and while
+	// locked, failures are not audited: an attacker cannot grow the
+	// append-only audit log or burn bcrypt CPU without limit.
+	if locked, wait := s.Throttle.Locked(name, ip); locked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests, "too many failed sign-in attempts; try again later")
+		return
+	}
+	fail := func(reason string) {
+		payload := map[string]any{"ip": ip}
+		if reason != "" {
+			payload["reason"] = reason
+		}
+		s.audit(r.Context(), name, "login_failed", name, payload)
+		if s.Throttle.Fail(name, ip) {
+			s.audit(r.Context(), "system", "login_locked", name, map[string]any{"ip": ip})
+		}
 		writeErr(w, http.StatusUnauthorized, auth.ErrInvalidLogin.Error())
+	}
+	if req.Username == "" || req.Password == "" || len(req.Username) > 64 || len(req.Password) > 256 {
+		fail("malformed")
 		return
 	}
 	u, err := s.Auth.Login(r.Context(), w, req.Username, req.Password)
 	if errors.Is(err, auth.ErrInvalidLogin) {
-		s.audit(r.Context(), name, "login_failed", name, nil)
-		writeErr(w, http.StatusUnauthorized, err.Error())
+		fail("")
 		return
 	}
 	if err != nil {
 		s.serverErr(w, "login", err)
 		return
 	}
+	s.Throttle.Succeed(name)
 	s.audit(r.Context(), u.Username, "login", u.Username, map[string]any{"role": u.Role})
 	writeJSON(w, http.StatusOK, meResp{User: u, Permissions: auth.Permissions(u.Role)})
+}
+
+// clientIP is the TCP peer address. Forwarding headers are deliberately
+// ignored: core is not deployed behind a proxy it could trust.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -239,11 +278,11 @@ func (s *Server) cameraState(id string, enabled, engineOK bool, now time.Time) (
 }
 
 type overviewCamera struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	State     string    `json:"state"`
-	Since     time.Time `json:"since"`
-	Protected bool      `json:"protected"`
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	State    string    `json:"state"`
+	Since    time.Time `json:"since"`
+	Priority bool      `json:"priority"`
 }
 
 type overviewRoom struct {
@@ -253,8 +292,15 @@ type overviewRoom struct {
 	Cameras []overviewCamera `json:"cameras"`
 }
 
+type businessStatus struct {
+	Open     bool        `json:"open"`
+	Timezone string      `json:"timezone"`
+	Today    [][2]string `json:"today"`
+}
+
 type overviewResp struct {
 	Facility     store.Facility    `json:"facility"`
+	Business     businessStatus    `json:"business"`
 	State        string            `json:"state"`
 	Rooms        []overviewRoom    `json:"rooms"`
 	OpenAlerts   int               `json:"open_alerts"`
@@ -303,10 +349,11 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, _ *store.User)
 	byRoom := map[string][]overviewCamera{}
 	for _, c := range cams {
 		st, since := s.cameraState(c.ID, c.Enabled, engineOK, now)
-		byRoom[c.RoomID] = append(byRoom[c.RoomID], overviewCamera{ID: c.ID, Name: c.Name, State: st, Since: since, Protected: c.Protected})
+		byRoom[c.RoomID] = append(byRoom[c.RoomID], overviewCamera{ID: c.ID, Name: c.Name, State: st, Since: since, Priority: c.Priority})
 	}
 	resp := overviewResp{
 		Facility: *fac, Rooms: []overviewRoom{}, OpenAlerts: open,
+		Business:     businessStatus{Open: s.Schedule.IsOpen(now), Timezone: s.Schedule.Location().String(), Today: s.Schedule.Today(now)},
 		AlertsHealth: map[string]int{"failed": failed, "delayed": delayed},
 		Services:     map[string]string{"engine": "ok", "engine_error": "", "database": "ok", "evidence": "ok"},
 		GeneratedAt:  now,
@@ -382,7 +429,7 @@ func (s *Server) listCameras(w http.ResponseWriter, r *http.Request, _ *store.Us
 var idRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // ValidateCamera checks a camera record, including its written authorization
-// (US-05) and zone geometry.
+// and zone geometry.
 func ValidateCamera(c store.Camera) error {
 	switch {
 	case !idRe.MatchString(c.ID):
@@ -408,11 +455,16 @@ func ValidateCamera(c store.Camera) error {
 			return fmt.Errorf("duplicate zone id %q", z.ID)
 		}
 		seen[z.ID] = true
-		if z.Kind != eventengine.ZoneRestricted && z.Kind != eventengine.ZoneSurface {
-			return fmt.Errorf("zone %s: kind must be %q or %q", z.ID, eventengine.ZoneRestricted, eventengine.ZoneSurface)
+		if !eventengine.ValidZoneKind(z.Kind) {
+			return fmt.Errorf("zone %s: unknown kind %q (restricted, secure, staff_area, queue, post, customer_side, floor, count_line)", z.ID, z.Kind)
 		}
-		if len(z.Polygon) < 3 {
+		switch {
+		case z.Kind == eventengine.ZoneCountLine && len(z.Polygon) != 2:
+			return fmt.Errorf("zone %s: a count_line needs exactly 2 points", z.ID)
+		case z.Kind != eventengine.ZoneCountLine && len(z.Polygon) < 3:
 			return fmt.Errorf("zone %s: polygon needs at least 3 points", z.ID)
+		case len(z.Polygon) > 64:
+			return fmt.Errorf("zone %s: at most 64 points", z.ID)
 		}
 		for _, p := range z.Polygon {
 			if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
@@ -454,7 +506,7 @@ func (s *Server) createCamera(w http.ResponseWriter, r *http.Request, u *store.U
 		return
 	}
 	s.audit(r.Context(), u.Username, "camera_created", c.ID, map[string]any{
-		"room_id": c.RoomID, "name": c.Name, "protected": c.Protected, "zones": len(c.Zones), "enabled": c.Enabled,
+		"room_id": c.RoomID, "name": c.Name, "priority": c.Priority, "staff_only": c.StaffOnly, "zones": len(c.Zones), "enabled": c.Enabled,
 		"authorized_by": c.AuthorizedBy, "authorized_at": c.AuthorizedAt, "authorization_scope": c.AuthorizationScope})
 	if c.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -481,6 +533,11 @@ func (s *Server) listIncidents(w http.ResponseWriter, r *http.Request, u *store.
 	f := store.IncidentFilter{
 		OpenOnly:      boolParam(q, "open"),
 		IncludeShadow: boolParam(q, "shadow") && auth.Can(u.Role, auth.PermViewShadow),
+		PosRef:        strings.TrimSpace(q.Get("pos_ref")),
+	}
+	if len(f.PosRef) > 100 {
+		writeErr(w, http.StatusBadRequest, "pos_ref is too long")
+		return
 	}
 	if l := q.Get("limit"); l != "" {
 		n, err := strconv.Atoi(l)
@@ -557,9 +614,12 @@ func (s *Server) ackIncident(w http.ResponseWriter, r *http.Request, u *store.Us
 	s.changedIncident(w, r, inc.ID, changed)
 }
 
+// dispositions follow the playbook's shift exception queue: a manager marks
+// each flag OK, coach or investigate (or false detection / escalated /
+// inconclusive). None of them is a finding about a person.
 var dispositions = map[string]bool{
-	"no_concern": true, "routine_care": true, "false_detection": true,
-	"concern_followed_up": true, "escalated_external": true, "inconclusive": true,
+	"ok": true, "coach": true, "investigate": true,
+	"false_detection": true, "escalated_external": true, "inconclusive": true,
 }
 
 // maxNote bounds a reviewer's note.
@@ -619,7 +679,10 @@ func (s *Server) holdIncident(w http.ResponseWriter, r *http.Request, u *store.U
 	if !ok {
 		return
 	}
-	if err := s.DB.SetLegalHold(r.Context(), inc.ID, u.Username, *req.Hold); err != nil {
+	if err := s.DB.SetLegalHold(r.Context(), inc.ID, u.Username, *req.Hold); errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "incident not found")
+		return
+	} else if err != nil {
 		s.serverErr(w, "set legal hold", err)
 		return
 	}
@@ -828,7 +891,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, admin *store
 		writeErr(w, http.StatusBadRequest, "display_name is required (max 128 characters)")
 		return
 	case !auth.ValidRole(req.Role):
-		writeErr(w, http.StatusBadRequest, "role must be caregiver, lead, reviewer or admin")
+		writeErr(w, http.StatusBadRequest, "role must be staff, manager, owner or admin")
 		return
 	case len(req.Password) > 256:
 		writeErr(w, http.StatusBadRequest, "password is too long")
@@ -851,6 +914,161 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, admin *store
 	}
 	s.audit(r.Context(), admin.Username, "user_created", u.Username, map[string]any{"role": u.Role, "display_name": u.DisplayName})
 	writeJSON(w, http.StatusCreated, u)
+}
+
+// updateUser lets an admin rename, change the role of, disable/enable or
+// reset the password of a user. Access changes end the user's sessions.
+func (s *Server) updateUser(w http.ResponseWriter, r *http.Request, admin *store.User) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
+	}
+	var req struct {
+		DisplayName *string `json:"display_name"`
+		Role        *string `json:"role"`
+		Disabled    *bool   `json:"disabled"`
+		Password    *string `json:"password"`
+	}
+	if err := decode(r, &req, false); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.DisplayName == nil && req.Role == nil && req.Disabled == nil && req.Password == nil {
+		writeErr(w, http.StatusBadRequest, "nothing to change")
+		return
+	}
+	var upd store.UserUpdate
+	changes := map[string]any{}
+	if req.DisplayName != nil {
+		d := strings.TrimSpace(*req.DisplayName)
+		if d == "" || len(d) > 128 {
+			writeErr(w, http.StatusBadRequest, "display_name is required (max 128 characters)")
+			return
+		}
+		upd.DisplayName = &d
+		changes["display_name"] = d
+	}
+	if req.Role != nil {
+		if !auth.ValidRole(*req.Role) {
+			writeErr(w, http.StatusBadRequest, "role must be staff, manager, owner or admin")
+			return
+		}
+		upd.Role = req.Role
+		changes["role"] = *req.Role
+	}
+	if req.Disabled != nil {
+		upd.Disabled = req.Disabled
+		changes["disabled"] = *req.Disabled
+	}
+	if req.Password != nil {
+		if len(*req.Password) > 256 {
+			writeErr(w, http.StatusBadRequest, "password is too long")
+			return
+		}
+		hash, err := auth.HashPassword(*req.Password)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		upd.PasswordHash = &hash
+		changes["password_reset"] = true // never the password itself
+	}
+	// An admin cannot lock themselves out (or leave the site without an admin
+	// by accident).
+	if id == admin.ID && ((req.Disabled != nil && *req.Disabled) || (req.Role != nil && *req.Role != "admin")) {
+		writeErr(w, http.StatusBadRequest, "you cannot disable or demote your own account")
+		return
+	}
+	u, err := s.DB.UpdateUser(r.Context(), id, upd)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		s.serverErr(w, "update user", err)
+		return
+	}
+	s.audit(r.Context(), admin.Username, "user_updated", u.Username, changes)
+	writeJSON(w, http.StatusOK, u)
+}
+
+// ---- analytics & access log ------------------------------------------------------
+
+// timeRange parses ?from=&to= (RFC 3339), defaulting to the last 7 days.
+func timeRange(q url.Values, now time.Time, maxSpan time.Duration) (time.Time, time.Time, error) {
+	to, from := now, now.Add(-7*24*time.Hour)
+	if v := q.Get("to"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return from, to, errors.New("to must be an RFC 3339 time")
+		}
+		to = t
+		if q.Get("from") == "" {
+			from = to.Add(-7 * 24 * time.Hour)
+		}
+	}
+	if v := q.Get("from"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return from, to, errors.New("from must be an RFC 3339 time")
+		}
+		from = t
+	}
+	if !from.Before(to) {
+		return from, to, errors.New("from must be before to")
+	}
+	if to.Sub(from) > maxSpan {
+		return from, to, fmt.Errorf("range is limited to %d days", int(maxSpan.Hours()/24))
+	}
+	return from.UTC(), to.UTC(), nil
+}
+
+func (s *Server) traffic(w http.ResponseWriter, r *http.Request, _ *store.User) {
+	from, to, err := timeRange(r.URL.Query(), time.Now().UTC(), 92*24*time.Hour)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rows, err := s.DB.Traffic(r.Context(), from, to)
+	if err != nil {
+		s.serverErr(w, "load traffic", err)
+		return
+	}
+	if rows == nil {
+		rows = []store.TrafficRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"timezone": s.Schedule.Location().String(), "bucket_minutes": int(eventengine.TrafficBucket.Minutes()),
+		"from": from, "to": to, "buckets": rows,
+	})
+}
+
+func (s *Server) accessLog(w http.ResponseWriter, r *http.Request, _ *store.User) {
+	q := r.URL.Query()
+	from, to, err := timeRange(q, time.Now().UTC(), 92*24*time.Hour)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	limit := 500
+	if l := q.Get("limit"); l != "" {
+		n, err := strconv.Atoi(l)
+		if err != nil || n < 1 {
+			writeErr(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = min(n, 1000)
+	}
+	rows, err := s.DB.AccessLog(r.Context(), from, to, limit)
+	if err != nil {
+		s.serverErr(w, "load access log", err)
+		return
+	}
+	if rows == nil {
+		rows = []store.ZoneAccessRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ *store.User) {

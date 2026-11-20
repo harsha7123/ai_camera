@@ -14,7 +14,7 @@ Results: [`docs/BENCHMARK_RESULTS.md`](../../../docs/BENCHMARK_RESULTS.md).
 | RTMPose-s, RTMPose-m | top-down pose, 256×192 person crop | MMPose ONNX SDK files, downloaded with rtmlib |
 | RTMO-s, RTMO-m | one-stage pose, 640×640 frame | MMPose ONNX SDK files, downloaded with rtmlib |
 
-Excluded by `docs/LICENSING_REGISTER.md`: Ultralytics YOLO, BoxMOT, VideoMAE, Sapiens, FiDIP and any non-commercial/AGPL model.
+Excluded by `docs/LICENSING_REGISTER.md`: Ultralytics YOLO, BoxMOT, VideoMAE, Sapiens and any non-commercial/AGPL model.
 
 ## Inputs
 Seeded random tensors only. No images, video or footage of any kind are used or needed.

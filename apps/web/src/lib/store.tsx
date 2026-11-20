@@ -1,11 +1,12 @@
 "use client";
 
-// Signed-in application state: who am I, facility overview, incident list,
-// the live event stream (with reconnect + full re-fetch), toasts and sound.
+// Signed-in application state: who am I, restaurant overview, incident list,
+// the live event stream (with reconnect, liveness check and full re-fetch),
+// toasts and sound.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { api, setUnauthorizedHandler } from "./api";
-import { eventLabel, worstState } from "./present";
+import { api, notifyUnauthorized, setUnauthorizedHandler } from "./api";
+import { LIFECYCLE_RANK, eventLabel, eventTier, worstState } from "./present";
 import { enableSound, disableSound, playChime, soundSupported } from "./sound";
 import type {
   AlertEvent,
@@ -26,6 +27,12 @@ export const OVERVIEW_POLL_MS = 5_000;
 export const STALE_MS = 15_000;
 const INCIDENT_POLL_MS = 30_000;
 const MAX_BACKOFF_MS = 15_000;
+/** The core sends a `: ping` comment every 15 s. Silence for ~2 intervals means the stream is dead. */
+export const SSE_PING_MS = 15_000;
+export const SSE_LIVENESS_MS = 2 * SSE_PING_MS + 5_000;
+const LIVENESS_CHECK_MS = 5_000;
+/** Non-sticky toasts kept on screen at once. Sticky (urgent, unacknowledged) toasts are never evicted. */
+export const MAX_TRANSIENT_TOASTS = 4;
 
 export type LiveStatus = "connecting" | "open" | "down";
 
@@ -50,6 +57,8 @@ export interface Toast {
   body?: string;
   href?: string;
   sticky?: boolean;
+  /** Sticky alert toasts are cleared once their incident is acknowledged. */
+  incidentId?: string;
 }
 
 interface AppState {
@@ -104,6 +113,86 @@ function mergeIncident(list: Incident[], inc: Incident): Incident[] {
   return next;
 }
 
+/** The newer of two copies of one incident. The lifecycle never moves backwards. */
+function newer(local: Incident, fetched: Incident, localIsNewer: boolean): Incident {
+  const lr = LIFECYCLE_RANK[local.lifecycle] ?? 0;
+  const fr = LIFECYCLE_RANK[fetched.lifecycle] ?? 0;
+  if (lr !== fr) return lr > fr ? { ...fetched, ...local } : { ...local, ...fetched };
+  return localIsNewer ? { ...fetched, ...local } : { ...local, ...fetched };
+}
+
+/**
+ * Merges a fetched incident list into the current one. Incidents missing from
+ * the snapshot are dropped (they left the window), unless they changed locally
+ * after the request started (e.g. created by a live event the snapshot missed).
+ */
+function mergeSnapshot(cur: Incident[], fetched: Map<string, Incident>, changedSince: (id: string) => boolean): Incident[] {
+  const out: Incident[] = [];
+  const seen = new Set<string>();
+  for (const local of cur) {
+    const f = fetched.get(local.id);
+    if (f) {
+      out.push(newer(local, f, changedSince(local.id)));
+      seen.add(local.id);
+    } else if (changedSince(local.id)) {
+      out.push(local);
+    }
+  }
+  for (const [id, f] of fetched) if (!seen.has(id)) out.push(f);
+  return out;
+}
+
+/** Evicts the oldest non-sticky toasts beyond the cap. Sticky toasts stay until dismissed or acknowledged. */
+export function capToasts(ts: Toast[]): Toast[] {
+  const transient = ts.filter((t) => !t.sticky);
+  const excess = transient.length - MAX_TRANSIENT_TOASTS;
+  if (excess <= 0) return ts;
+  const drop = new Set(transient.slice(0, excess).map((t) => t.id));
+  return ts.filter((t) => !drop.has(t.id));
+}
+
+/**
+ * Minimal text/event-stream reader. Calls `on(type, data)` for each event and
+ * `on(null, "")` for each comment line (the core's `: ping`).
+ */
+async function readSse(body: ReadableStream<Uint8Array>, signal: AbortSignal, on: (type: string | null, data: string) => void): Promise<void> {
+  const reader = body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let type = "";
+  let data: string[] = [];
+  const onAbort = () => void reader.cancel().catch(() => {});
+  signal.addEventListener("abort", onAbort);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done || signal.aborted) return;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.search(/\r\n|\n|\r/)) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + (buf[nl] === "\r" && buf[nl + 1] === "\n" ? 2 : 1));
+        if (line === "") {
+          if (data.length) on(type || "message", data.join("\n"));
+          type = "";
+          data = [];
+        } else if (line.startsWith(":")) {
+          on(null, "");
+        } else {
+          const c = line.indexOf(":");
+          const field = c === -1 ? line : line.slice(0, c);
+          let val = c === -1 ? "" : line.slice(c + 1);
+          if (val.startsWith(" ")) val = val.slice(1);
+          if (field === "event") type = val;
+          else if (field === "data") data.push(val);
+        }
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut: (expired: boolean) => void; children: ReactNode }) {
   const perms = useMemo(() => new Set(me.permissions), [me.permissions]);
   const can = useCallback((p: Permission) => perms.has(p), [perms]);
@@ -152,18 +241,34 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
     showShadowRef.current = v;
     setShowShadowState(v);
   }, []);
+
+  // Incident freshness. Every local change (SSE event, our own POST result)
+  // bumps `clock` and stamps the incident. A list refresh remembers the clock
+  // when it started; anything stamped later is newer than that snapshot and
+  // wins. Responses are applied in request order: a slower, older refresh
+  // never overwrites a newer one.
+  const clock = useRef(0);
+  const touched = useRef(new Map<string, number>());
+  const refreshSeq = useRef(0);
+  const appliedSeq = useRef(0);
+
   const shadowQ = perms.has("view_shadow") && showShadow ? "&shadow=1" : "";
   const refreshIncidents = useCallback(async () => {
+    const seq = ++refreshSeq.current;
+    const startedAt = clock.current;
     try {
       const [open, recent] = await Promise.all([
         api.get<Incident[]>(`/api/v1/incidents?open=1&limit=500${shadowQ}`),
         api.get<Incident[]>(`/api/v1/incidents?limit=200${shadowQ}`),
       ]);
-      const byId = new Map<string, Incident>();
-      for (const i of [...recent, ...open]) byId.set(i.id, i);
-      setIncidents([...byId.values()]);
+      if (seq < appliedSeq.current) return; // a newer refresh already landed
+      appliedSeq.current = seq;
+      const fetched = new Map<string, Incident>();
+      for (const i of [...recent, ...open]) fetched.set(i.id, i);
+      setIncidents((cur) => mergeSnapshot(cur ?? [], fetched, (id) => (touched.current.get(id) ?? 0) > startedAt));
       setIncidentsError(null);
     } catch (e) {
+      if (seq < appliedSeq.current) return;
       setIncidentsError(e instanceof Error ? e.message : String(e));
     }
   }, [shadowQ]);
@@ -172,14 +277,23 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
     await Promise.all([refreshOverview(), refreshIncidents()]);
   }, [refreshOverview, refreshIncidents]);
 
-  const upsertIncident = useCallback((inc: Incident) => {
-    if (inc.status === "SHADOW" && !showShadowRef.current) return;
-    setIncidents((list) => mergeIncident(list ?? [], inc));
+  const dropAlertToasts = useCallback((incidentId: string) => {
+    setToasts((ts) => (ts.some((t) => t.incidentId === incidentId) ? ts.filter((t) => t.incidentId !== incidentId) : ts));
   }, []);
+
+  const upsertIncident = useCallback(
+    (inc: Incident) => {
+      if (inc.status === "SHADOW" && !showShadowRef.current) return;
+      touched.current.set(inc.id, ++clock.current);
+      setIncidents((list) => mergeIncident(list ?? [], inc));
+      if (inc.lifecycle !== "new") dropAlertToasts(inc.id);
+    },
+    [dropAlertToasts],
+  );
 
   const pushToast = useCallback((t: Omit<Toast, "id">) => {
     const id = ++toastSeq.current;
-    setToasts((ts) => [...ts.slice(-4), { ...t, id }]);
+    setToasts((ts) => capToasts([...ts, { ...t, id }]));
     if (!t.sticky) setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 8000);
   }, []);
   const dismissToast = useCallback((id: number) => setToasts((ts) => ts.filter((x) => x.id !== id)), []);
@@ -243,8 +357,12 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
           pushToast({
             tone: "urgent",
             sticky: true,
+            incidentId: ev.incident_id,
             title: `${eventLabel(ev.event_type)} — ${roomNameRef.current(ev.room_id)}`,
-            body: "Review required. Please check the room and acknowledge.",
+            body:
+              eventTier(ev.event_type) === "urgent"
+                ? "Check the area now and acknowledge. This is a prompt to look, not a finding."
+                : "Check the clip or the area and acknowledge. This is a prompt to look, not a finding.",
             href: `/incidents/?id=${encodeURIComponent(ev.incident_id)}`,
           });
           softRefresh();
@@ -253,9 +371,10 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
         }
         case "incident_escalated": {
           const ev = data as EscalatedEvent;
-          setIncidents((list) => list?.map((i) => (i.id === ev.incident_id ? { ...i, escalation_level: ev.level } : i)) ?? list);
+          touched.current.set(ev.incident_id, ++clock.current);
+          setIncidents((list) => list?.map((i) => (i.id === ev.incident_id ? { ...i, escalation_level: Math.max(i.escalation_level, ev.level) } : i)) ?? list);
           if (soundRef.current) playChime();
-          pushToast({ tone: "urgent", title: `Alert escalated to level ${ev.level}`, body: "Not yet acknowledged.", href: `/incidents/?id=${encodeURIComponent(ev.incident_id)}` });
+          pushToast({ tone: "urgent", title: `Alert escalated to level ${ev.level}`, body: "Not yet acknowledged.", href: `/incidents/?id=${encodeURIComponent(ev.incident_id)}`, incidentId: ev.incident_id });
           break;
         }
         case "alert_delivery_failed": {
@@ -281,56 +400,92 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
   }, [refreshAll]);
 
   // Live stream with our own reconnect/backoff so the "disconnected" state is explicit.
+  // It reads the stream with fetch rather than EventSource: EventSource hides
+  // `: ping` comments, and the pings are what tell a silent-but-healthy stream
+  // from a dead connection (a sleeping laptop, a proxy that dropped it).
   useEffect(() => {
-    let es: EventSource | null = null;
+    let ctrl: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     let stopped = false;
+    let lastSeen = 0;
+
+    const fail = (c: AbortController) => {
+      if (ctrl !== c || stopped) return;
+      c.abort();
+      ctrl = null;
+      const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
+      attempt += 1;
+      const at = Date.now() + delay;
+      setLive((l) => ({ status: "down", downSince: l.downSince ?? Date.now(), reconnectAt: at }));
+      // If the stream failed because the session ended, this triggers the 401 handler.
+      api.get<Me>("/api/v1/me").catch(() => {});
+      timer = setTimeout(connect, delay);
+    };
 
     const connect = () => {
       if (stopped) return;
       if (timer) clearTimeout(timer);
       timer = null;
-      es?.close();
+      ctrl?.abort();
+      const c = new AbortController();
+      ctrl = c;
+      lastSeen = Date.now();
       setLive((l) => ({ ...l, status: l.status === "down" ? "down" : "connecting", reconnectAt: null }));
-      const src = new EventSource("/api/v1/events", { withCredentials: true });
-      es = src;
-      src.onopen = () => {
+      void (async () => {
+        let res: Response;
+        try {
+          res = await fetch("/api/v1/events", { credentials: "same-origin", cache: "no-store", headers: { Accept: "text/event-stream" }, signal: c.signal });
+        } catch {
+          fail(c);
+          return;
+        }
+        if (ctrl !== c) return;
+        if (res.status === 401) notifyUnauthorized("/api/v1/events");
+        if (!res.ok || !res.body) {
+          fail(c);
+          return;
+        }
         attempt = 0;
+        lastSeen = Date.now();
         setLive({ status: "open", downSince: null, reconnectAt: null });
         // Events are not replayed: always re-fetch everything after (re)connecting.
         void refreshAllRef.current();
-      };
-      src.onerror = () => {
-        if (es !== src) return;
-        src.close();
-        es = null;
-        const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
-        attempt += 1;
-        const at = Date.now() + delay;
-        setLive((l) => ({ status: "down", downSince: l.downSince ?? Date.now(), reconnectAt: at }));
-        // If the stream failed because the session ended, this triggers the 401 handler.
-        api.get<Me>("/api/v1/me").catch(() => {});
-        timer = setTimeout(connect, delay);
-      };
-      for (const t of SSE_TYPES) {
-        src.addEventListener(t, (e) => {
-          let data: unknown = null;
-          try {
-            data = JSON.parse((e as MessageEvent<string>).data);
-          } catch {
-            return;
-          }
-          onEventRef.current(t, data);
-        });
-      }
+        try {
+          await readSse(res.body, c.signal, (type, data) => {
+            lastSeen = Date.now();
+            if (type === null) return; // comment (ping) or keep-alive
+            if (!(SSE_TYPES as readonly string[]).includes(type)) return;
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(data);
+            } catch {
+              return;
+            }
+            onEventRef.current(type as SseType, parsed);
+          });
+        } catch {
+          /* aborted or network error */
+        }
+        fail(c); // the stream ended: the server closed it or the connection dropped
+      })();
     };
+
+    // A stream that has gone silent for two ping intervals is treated as dead.
+    const checkLiveness = () => {
+      if (stopped || !ctrl) return;
+      if (Date.now() - lastSeen > SSE_LIVENESS_MS) fail(ctrl);
+    };
+    const liveness = setInterval(checkLiveness, LIVENESS_CHECK_MS);
+
     reconnectRef.current = () => {
       attempt = 0;
       connect();
     };
     const wake = () => {
-      if (!es && !stopped) reconnectRef.current();
+      if (stopped || document.visibilityState === "hidden") return;
+      if (!ctrl) reconnectRef.current();
+      else checkLiveness();
     };
     window.addEventListener("online", wake);
     document.addEventListener("visibilitychange", wake);
@@ -338,7 +493,9 @@ export function AppProvider({ me, onSignedOut, children }: { me: Me; onSignedOut
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
-      es?.close();
+      clearInterval(liveness);
+      ctrl?.abort();
+      ctrl = null;
       window.removeEventListener("online", wake);
       document.removeEventListener("visibilitychange", wake);
     };

@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
-	"github.com/saimouli3/zeoatap/services/core/internal/testutil/pgtest"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/testutil/pgtest"
 )
 
 var ctx = context.Background()

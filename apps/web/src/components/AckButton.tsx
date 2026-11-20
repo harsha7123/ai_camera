@@ -4,13 +4,15 @@ import { useState } from "react";
 import { Icon } from "./Icon";
 import { api, errorMessage } from "@/lib/api";
 import { useApp } from "@/lib/store";
+import { needsAck } from "@/lib/present";
 import type { Incident } from "@/lib/types";
 
 /** One-tap acknowledge. Records who/when on the server; stops repeat alerts. */
 export function AckButton({ incident, onDone, block }: { incident: Incident; onDone?: (i: Incident) => void; block?: boolean }) {
   const { can, upsertIncident, pushToast, refreshOverview } = useApp();
   const [busy, setBusy] = useState(false);
-  if (!can("acknowledge") || incident.lifecycle !== "new") return null;
+  // Same rule as the inbox: SHADOW incidents page nobody, so there is nothing to acknowledge.
+  if (!can("acknowledge") || !needsAck(incident)) return null;
   const ack = async () => {
     setBusy(true);
     try {

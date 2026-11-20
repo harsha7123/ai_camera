@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zeoatap.local/contracts/observation.v1.json",
-  "title": "Observation v1",
-  "description": "What a detector saw in one analyzed frame. Detectors never make safety decisions; the core event engine does (ADR-002). Mirrors services/core/internal/eventengine/types.go.",
+  "$id": "https://zeoatap.local/contracts/observation.v2.json",
+  "title": "Observation v2",
+  "description": "What a detector saw in one analyzed frame. Detectors never make decisions; the core event engine does (ADR-002). Mirrors services/core/internal/eventengine/types.go.",
   "type": "object",
   "required": [
     "camera_id",
@@ -65,6 +65,16 @@
         }
       }
     },
+    "frame_size": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "Analysed frame [width, height] in pixels. Lets core turn normalized boxes into real aspect ratios (person_down). Optional; core assumes 16:9."
+    },
     "tracks": {
       "type": "array",
       "items": {
@@ -84,9 +94,11 @@
           },
           "role": {
             "enum": [
-              "infant",
-              "adult"
-            ]
+              "person",
+              "staff",
+              "customer"
+            ],
+            "description": "person = unknown. The worker sends person; core infers staff from staff_area zones and staff_only cameras. staff/customer are reserved for an optional consented uniform classifier. Never derived from faces (ADR-003)."
           },
           "score": {
             "type": "number",
@@ -107,15 +119,13 @@
           "pose_quality": {
             "type": "number",
             "minimum": 0,
-            "maximum": 1
+            "maximum": 1,
+            "description": "Optional: keypoint quality when the pose model runs."
           },
           "visibility": {
             "type": "number",
             "minimum": 0,
             "maximum": 1
-          },
-          "held": {
-            "type": "boolean"
           }
         }
       }

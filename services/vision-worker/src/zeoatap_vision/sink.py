@@ -9,11 +9,19 @@ Authorization: Bearer $ZEOATAP_INTERNAL_TOKEN (packages/contracts/API.md).
   than stale ones; core detects gaps through its own staleness timers.
 - A single sender thread batches up to `batch_max` lines or `flush_interval_s`.
 - Every request has explicit connect/read timeouts.
+- Replies are `{"accepted", "ignored"}` (200) or `{"error", "accepted",
+  "ignored", "line"}` (400/503), where `line` is the 0-based index of the bad
+  line (400) or of the first line not queued (503). Lines before `line` are
+  already in core and are never resent.
 - Failures (network error, 5xx, 503 backlog, 429, 401/403) are retried with
-  jittered exponential backoff; the batch is kept and retried in order.
-- 400 "bad line": core accepted the first n lines (`accepted` in the reply)
-  and rejected the rest. The offending line is dropped and counted
-  (rejected_total); the remaining lines are retried.
+  jittered exponential backoff, in order. On a 503 with `line`, only lines
+  from `line` on are retried.
+- 400 "bad line": the line at `line` is dropped and counted (rejected_total);
+  the lines after it are resent. Without `line` (older core), `accepted` is
+  taken as the bad line's index.
+- Ignored lines (camera unknown to core) are counted (ignored_total), not resent.
+- Observations that cannot be serialized as strict JSON (NaN/inf) are dropped
+  and counted (invalid_total) instead of sending invalid JSON.
 - The token never appears in logs, status or exceptions.
 """
 
@@ -28,6 +36,7 @@ from collections import deque
 from urllib.parse import urlsplit
 
 from .config import redact
+from .observation import dumps_observation
 from .timing import Backoff
 
 log = logging.getLogger(__name__)
@@ -61,6 +70,8 @@ class CoreSink:
         self.written = 0  # lines core accepted (name kept for VisionWorker.status)
         self.dropped_total = 0  # buffer overflow, oldest first
         self.rejected_total = 0  # lines core refused with 400
+        self.ignored_total = 0  # lines core read but ignored (unknown camera)
+        self.invalid_total = 0  # observations that are not valid JSON (NaN/inf), never sent
         self.batches_total = 0
         self.failures_total = 0
         self.retries_total = 0
@@ -73,7 +84,13 @@ class CoreSink:
 
     # ---- producer side (never blocks on the network) --------------------
     def emit(self, obs: dict) -> None:
-        line = json.dumps(obs, separators=(",", ":")).encode()
+        try:
+            line = dumps_observation(obs).encode()
+        except ValueError as e:
+            with self._lock:
+                self.invalid_total += 1
+            log.warning("core sink: dropped an observation that is not valid JSON: %s", e)
+            return
         with self._lock:
             if len(self._buf) >= self.max_buffer:
                 self._buf.popleft()
@@ -97,6 +114,8 @@ class CoreSink:
             "accepted_total": self.written,
             "dropped_total": self.dropped_total,
             "rejected_total": self.rejected_total,
+            "ignored_total": self.ignored_total,
+            "invalid_total": self.invalid_total,
             "batches_total": self.batches_total,
             "failures_total": self.failures_total,
             "retries_total": self.retries_total,
@@ -190,22 +209,36 @@ class CoreSink:
             reply = json.loads(raw or b"{}")
         except ValueError:
             reply = {}
+        if not isinstance(reply, dict):
+            reply = {}
+        accepted, ignored = _count(reply, "accepted"), _count(reply, "ignored")
+        err = str(reply.get("error", ""))[:200]
         if status == 200:
-            n = int(reply.get("accepted", len(batch))) if isinstance(reply, dict) else len(batch)
-            self.written += min(n, len(batch))
+            n = len(batch) if accepted is None else min(accepted, len(batch))
+            self.written += n
+            self.ignored_total += min(ignored or 0, len(batch) - n)
             self.last_success_ts = time.time()
             return True, []
+        line = _count(reply, "line")
         if status == 400:
-            n = reply.get("accepted") if isinstance(reply, dict) else None
-            n = n if isinstance(n, int) and 0 <= n < len(batch) else None
-            if n is None:  # cannot tell which line was bad: drop the batch rather than loop forever
+            if line is None:  # older core: `accepted` is the bad line's index
+                line = accepted
+            if line is None or line >= len(batch):
+                # Cannot tell which line was bad: drop the batch rather than loop forever.
                 self.rejected_total += len(batch)
-                self._fail(f"400 from core, batch of {len(batch)} rejected: {str(reply.get('error', ''))[:200]}")
+                self._fail(f"400 from core, batch of {len(batch)} rejected: {err}")
                 return True, []
-            self.written += n
+            self.written += min(accepted or 0, line)
+            self.ignored_total += min(ignored or 0, line - min(accepted or 0, line))
             self.rejected_total += 1
-            self._fail(f"400 from core, line {n} rejected: {str(reply.get('error', ''))[:200]}")
-            return True, batch[n + 1:]
+            self._fail(f"400 from core, line {line} rejected: {err}")
+            return True, batch[line + 1:]
+        if status == 503 and line is not None and line <= len(batch):
+            # Core queued everything before `line`; resending it would duplicate observations.
+            self.written += min(accepted or 0, line)
+            self.ignored_total += min(ignored or 0, line - min(accepted or 0, line))
+            self._fail(f"HTTP 503 from core after {line} of {len(batch)} lines: {err}")
+            return False, batch[line:]  # back off: the backlog is full
         self._fail(f"HTTP {status} from core")
         return False, batch
 
@@ -229,3 +262,8 @@ class CoreSink:
             except OSError:
                 pass
             self._conn = None
+
+
+def _count(reply: dict, key: str) -> int | None:
+    v = reply.get(key)
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None

@@ -13,16 +13,17 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
 const (
 	CookieName = "zeoatap_session"
-	// Shared wall tablets: an idle session ends after 15 minutes (PRIVACY §4).
+	// Shared back-office tablets: an idle session ends after 15 minutes.
 	SessionTTL = 15 * time.Minute
 )
 
-// Role permissions, from the RBAC table in PRIVACY_SECURITY_COMPLIANCE §4.
+// Role permissions, from the RBAC table in packages/contracts/API.md and
+// PRIVACY_SECURITY_COMPLIANCE.
 type Permission string
 
 const (
@@ -33,13 +34,18 @@ const (
 	PermViewShadow  Permission = "view_shadow"
 	PermAdmin       Permission = "admin"
 	PermLegalHold   Permission = "legal_hold"
+	PermAnalytics   Permission = "view_analytics"
+	PermAccessLog   Permission = "view_access_log"
 )
 
+// Admins configure the system but cannot watch clips (separation of duties).
 var rolePerms = map[string]map[Permission]bool{
-	"caregiver": {PermViewStatus: true, PermAcknowledge: true},
-	"lead":      {PermViewStatus: true, PermAcknowledge: true, PermViewClips: true},
-	"reviewer":  {PermViewStatus: true, PermAcknowledge: true, PermViewClips: true, PermDisposition: true, PermViewShadow: true, PermLegalHold: true},
-	"admin":     {PermViewStatus: true, PermAcknowledge: true, PermAdmin: true, PermViewShadow: true, PermLegalHold: true},
+	"staff": {PermViewStatus: true, PermAcknowledge: true},
+	"manager": {PermViewStatus: true, PermAcknowledge: true, PermViewClips: true, PermDisposition: true,
+		PermAnalytics: true, PermAccessLog: true},
+	"owner": {PermViewStatus: true, PermAcknowledge: true, PermViewClips: true, PermDisposition: true,
+		PermAnalytics: true, PermAccessLog: true, PermViewShadow: true, PermLegalHold: true},
+	"admin": {PermViewStatus: true, PermAcknowledge: true, PermAdmin: true, PermViewShadow: true, PermLegalHold: true},
 }
 
 func Can(role string, p Permission) bool { return rolePerms[role][p] }
@@ -136,7 +142,8 @@ func (s *Service) StillValid(ctx context.Context, r *http.Request) (bool, error)
 // Permissions lists a role's permissions in a stable order.
 func Permissions(role string) []Permission {
 	out := []Permission{}
-	for _, p := range []Permission{PermViewStatus, PermAcknowledge, PermViewClips, PermDisposition, PermViewShadow, PermLegalHold, PermAdmin} {
+	for _, p := range []Permission{PermViewStatus, PermAcknowledge, PermViewClips, PermDisposition, PermAnalytics,
+		PermAccessLog, PermViewShadow, PermLegalHold, PermAdmin} {
 		if Can(role, p) {
 			out = append(out, p)
 		}

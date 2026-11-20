@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zeoatap.local/tools/eval/ground_truth.v1.json",
-  "title": "Zeoatap ground-truth annotations v1",
-  "description": "Event-level ground truth for SAFETY_VALIDATION §3-§4. One file holds one or more recording sessions. All ids are pseudonymous. Times are RFC 3339 (start/end) or seconds from the session's t0 (start_s/end_s); never both in one event.",
+  "$id": "https://zeoatap.local/tools/eval/ground_truth.v2.json",
+  "title": "Zeoatap Restaurant Watchdog ground-truth annotations v2",
+  "description": "Event-level ground truth for the restaurant event types in packages/contracts/API.md. One file holds one or more recording sessions. All ids are pseudonymous; no names, faces or employee numbers. Times are RFC 3339 (start/end) or seconds from the session's t0 (start_s/end_s); never both in one event.",
   "type": "object",
   "required": [
     "schema_version",
@@ -11,7 +11,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "1"
+      "const": "2"
     },
     "dataset": {
       "type": "object",
@@ -35,7 +35,7 @@
         },
         "locked": {
           "type": "boolean",
-          "description": "Test sets must be locked before evaluation (SAFETY_VALIDATION §3.2)."
+          "description": "Test sets must be locked (frozen and versioned) before evaluation."
         },
         "notes": {
           "type": "string"
@@ -74,12 +74,12 @@
         "facility_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Pseudonymous facility id."
+          "description": "Pseudonymous site id."
         },
         "camera_id": {
           "type": "string",
           "minLength": 1,
-          "description": "Primary camera; must equal the camera id used by vision-worker/core."
+          "description": "Primary camera; must equal the camera id used by vision-worker/core (e.g. cam-counter)."
         },
         "extra_camera_ids": {
           "type": "array",
@@ -89,17 +89,19 @@
           "description": "Other cameras covering the same room zones. An incident is in scope for this session if its cameras intersect camera_id + extra_camera_ids."
         },
         "room_id": {
-          "type": "string"
+          "type": "string",
+          "description": "Core room id, e.g. counter, dining, kitchen, back."
         },
         "subject": {
           "type": "string",
-          "description": "Pseudonymous subject id, e.g. manikin-M2. Never a child's name."
+          "description": "Pseudonymous actor id for staged sessions, e.g. actor-A2. Never a real name or POS employee number."
         },
         "consent_ids": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Consent / written acknowledgment records for the staff and actors in the recording."
         },
         "t0": {
           "$ref": "#/$defs/time",
@@ -129,8 +131,8 @@
           "type": "object",
           "required": [
             "lighting",
-            "occlusion",
-            "camera_angle"
+            "crowding",
+            "camera_view"
           ],
           "additionalProperties": true,
           "description": "Session-level strata. Events may override any key in their own conditions.",
@@ -138,25 +140,26 @@
             "lighting": {
               "enum": [
                 "day",
-                "ir",
-                "low_light",
-                "mixed"
-              ]
+                "night",
+                "after_hours_dark"
+              ],
+              "description": "day: daylight / normal service lighting; night: evening with interior lights on; after_hours_dark: lights off after close (IR or minimal light)."
             },
-            "occlusion": {
+            "crowding": {
               "enum": [
-                "none",
-                "partial",
-                "heavy"
-              ]
+                "empty",
+                "normal",
+                "rush"
+              ],
+              "description": "People in view: empty (0-1), normal service, rush (queue, full dining room)."
             },
-            "camera_angle": {
+            "camera_view": {
               "enum": [
                 "overhead",
-                "high_oblique",
-                "low_oblique",
-                "eye_level"
-              ]
+                "360",
+                "wide"
+              ],
+              "description": "overhead: POS/register camera looking down; 360: fisheye dome over an open floor; wide: wall-mounted wide angle (kitchen, back door, entrance)."
             },
             "camera_height_m": {
               "type": "number"
@@ -233,7 +236,7 @@
         },
         "hard_negatives": {
           "type": "array",
-          "description": "Staged non-events (rocking, adult lifts infant, placing on floor). Never counted as positives; incidents overlapping them are reported as false alerts on hard negatives.",
+          "description": "Staged or observed non-events that look like events: a customer bending to pick something up (person_down), staff entering the walk-in cooler (restricted_zone_entry), a refund with the customer present (pos_refund_no_customer), cleaning crew inside the staff window (after_hours_intrusion), lights switched off at close (camera_tamper), a queue of four (long_queue). Never counted as positives; incidents overlapping them are reported as false positives on hard negatives.",
           "items": {
             "$ref": "#/$defs/hard_negative"
           }
@@ -299,12 +302,22 @@
           "minLength": 1
         },
         "event_type": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Must equal the core rule's event_type, e.g. infant_off_surface, adult_in_restricted_zone, camera_offline."
+          "enum": [
+            "after_hours_intrusion",
+            "camera_tamper",
+            "restricted_zone_entry",
+            "person_down",
+            "long_queue",
+            "long_wait",
+            "unattended_post",
+            "pos_no_sale",
+            "pos_refund_no_customer"
+          ],
+          "description": "Core's event_type (packages/contracts/API.md). Annotate the onset of the condition as start (for dwell rules, the moment the condition first holds, not when the threshold is reached); spans shorter than the rule's threshold are hard negatives, not events."
         },
         "room_zone": {
-          "type": "string"
+          "type": "string",
+          "description": "Core room_zone, e.g. register-1, counter-queue, walk-in-cooler, back-door."
         },
         "start": {
           "$ref": "#/$defs/time"
@@ -340,7 +353,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Pseudonymous annotator ids. Safety events need >= 2 (SAFETY_VALIDATION §3.1)."
+          "description": "Pseudonymous annotator ids. Every event needs >= 2 independent annotators."
         },
         "adjudicated": {
           "type": "boolean",
@@ -359,6 +372,10 @@
         },
         "notes": {
           "type": "string"
+        },
+        "pos_ref": {
+          "type": "string",
+          "description": "POS ticket or event reference for pos_* events (matches the incident's pos_ref)."
         }
       }
     },
@@ -419,7 +436,7 @@
         "label": {
           "type": "string",
           "minLength": 1,
-          "description": "e.g. adult_lifts_infant, rocking, placed_on_floor"
+          "description": "e.g. customer_bending, staff_in_cooler, refund_with_customer, cleaning_crew, lights_off_at_close, queue_of_four"
         },
         "start": {
           "$ref": "#/$defs/time"

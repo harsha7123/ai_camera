@@ -1,8 +1,8 @@
-"""Small-sample statistics for rare safety events (SAFETY_VALIDATION §4.2).
+"""Small-sample statistics for rare events.
 
 Everything here is exact: Clopper-Pearson for proportions and the exact
 Poisson (chi-square) interval for rates. No normal approximations, because
-safety test sets are small and the interesting cases are at 0 or n.
+event test sets are small and the interesting cases are at 0 or n.
 """
 
 from __future__ import annotations

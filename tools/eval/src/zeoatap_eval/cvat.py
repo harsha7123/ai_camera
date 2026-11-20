@@ -1,7 +1,8 @@
 """CVAT import and inter-annotator agreement.
 
-Annotators label each safety event in CVAT as a *track* (any shape, usually
-a box around the subject) whose label is the event_type. The track is
+Annotators label each event in CVAT as a *track* (any shape, usually a box
+around the person, the queue or the register) whose label is the event_type
+(packages/contracts/API.md, e.g. person_down, long_queue). The track is
 visible (outside=0) from the event's start frame and gets an outside=1
 keyframe on the first frame after the event ends. Per-track attributes:
 visibility (visible|partial|not_visible), annotator_confidence

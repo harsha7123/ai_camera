@@ -64,6 +64,29 @@ def test_clip_auth_and_validation(idle_server):
     assert code == 422 and "no buffered video" in body["error"]
 
 
+def test_clip_paths_outside_the_spool_are_refused(idle_server, tmp_path_factory):
+    port, d = idle_server
+    other = tmp_path_factory.mktemp("other")
+    (d / "escape").symlink_to(other, target_is_directory=True)
+    now = time.time()
+    for path in (other / "x.mp4", d / "escape" / "x.mp4", "/tmp/x.mp4"):
+        code, body = post(port, {"camera_id": "cam1", "start": now - 20, "end": now - 10, "path": str(path)})
+        assert code == 400 and ("outside" in body["error"] or "symlink" in body["error"]), (path, body)
+
+
+def test_clip_dir_defaults_to_the_core_spool(tmp_path):
+    """Without --clip-dir, clips are still confined (to core's default spool)."""
+    vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), MockDetector(), JsonlSink())
+    srv = serve_health(vw, "127.0.0.1", 0, token=TOKEN)
+    try:
+        now = time.time()
+        code, body = post(srv.server_address[1], {"camera_id": "cam1", "start": now - 20, "end": now - 10,
+                                                  "path": str(tmp_path / "x.mp4")})
+        assert code == 400 and "outside" in body["error"]
+    finally:
+        srv.shutdown()
+
+
 def test_clip_endpoint_disabled_without_token(tmp_path):
     vw = VisionWorker(WorkerConfig([CameraConfig(id="cam1", url="rtsp://127.0.0.1:1/x")]), MockDetector(), JsonlSink())
     srv = serve_health(vw, "127.0.0.1", 0, token=None)

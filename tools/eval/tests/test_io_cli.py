@@ -21,9 +21,12 @@ def test_parse_time_handles_go_nanoseconds_and_offsets():
 
 def test_example_ground_truth_is_valid():
     g = load_ground_truth(EX / "ground_truth.example.json")
-    assert len(g.events) == 3
-    assert g.events[1].conditions["occlusion"] == "partial"  # event override of session conditions
-    assert g.sessions[0].hard_negatives[0].label == "adult_lifts_infant"
+    assert len(g.events) == 5
+    assert {e.event_type for e in g.events} == {"long_queue", "pos_refund_no_customer", "after_hours_intrusion",
+                                                "camera_tamper", "person_down"}
+    assert g.events[1].conditions["crowding"] == "normal"  # event override of session conditions
+    assert g.events[0].conditions["crowding"] == "rush"
+    assert g.sessions[0].hard_negatives[0].label == "refund_with_customer"
 
 
 def test_schema_rejects_bad_ground_truth():
@@ -35,6 +38,12 @@ def test_schema_rejects_bad_ground_truth():
     both["sessions"][0]["events"][0]["start"] = "2026-10-31T09:00:01Z"
     with pytest.raises(jsonschema.ValidationError):
         load_ground_truth(both)
+    infant = gt(session([ev(1, 2, event_type="infant_off_surface")]))
+    with pytest.raises(jsonschema.ValidationError):
+        load_ground_truth(infant)  # the old taxonomy is gone
+    old_strata = gt(session([ev(1, 2)], conditions={"lighting": "ir", "crowding": "normal", "camera_view": "wide"}))
+    with pytest.raises(jsonschema.ValidationError):
+        load_ground_truth(old_strata)
     no_t0 = gt(session([ev(1, 2)]))
     del no_t0["sessions"][0]["t0"]
     with pytest.raises(ValueError, match="t0"):
@@ -51,7 +60,7 @@ def test_ground_truth_warnings():
 
 
 def test_api_incident_shapes(tmp_path):
-    inc = {"id": "INC-1", "room_id": "r", "room_zone": "z", "event_type": "infant_off_surface", "family": "A",
+    inc = {"id": "INC-1", "room_id": "counter", "room_zone": "register-1", "event_type": "pos_no_sale", "family": "C",
            "start": "2026-10-31T09:00:01Z", "end": "2026-10-31T09:00:04Z", "cameras": ["cam1"],
            "status": "SHADOW", "created_at": "2026-10-31T09:00:02Z", "source": "p"}
     for name, text in [("a.json", json.dumps([inc])), ("b.json", json.dumps({"incidents": [inc]})),
@@ -79,16 +88,16 @@ def test_state_jsonl_timeline(tmp_path):
 
 CVAT_XML = """<?xml version="1.0" encoding="utf-8"?>
 <annotations><version>1.1</version>
- <track id="0" label="infant_off_surface" source="manual">
+ <track id="0" label="person_down" source="manual">
   <box frame="150" outside="0" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0">
    <attribute name="visibility">partial</attribute><attribute name="annotator_confidence">likely</attribute>
-   <attribute name="room_zone">changing-table-1</attribute></box>
+   <attribute name="room_zone">dining-floor</attribute></box>
   <box frame="165" outside="0" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0"/>
   <box frame="171" outside="1" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0"/>
   <box frame="300" outside="0" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0"/>
   <box frame="330" outside="1" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0"/>
  </track>
- <track id="1" label="adult" source="manual">
+ <track id="1" label="person" source="manual">
   <box frame="0" outside="0" occluded="0" keyframe="1" xtl="1" ytl="1" xbr="9" ybr="9" z_order="0"/>
  </track>
 </annotations>"""
@@ -97,13 +106,13 @@ CVAT_XML = """<?xml version="1.0" encoding="utf-8"?>
 def test_cvat_tracks_become_events(tmp_path):
     p = tmp_path / "a.xml"
     p.write_text(CVAT_XML)
-    evs = parse_cvat_video_xml(str(p), fps=15, labels={"infant_off_surface"})
+    evs = parse_cvat_video_xml(str(p), fps=15, labels={"person_down"})
     assert [(e.start_s, round(e.end_s, 3)) for e in evs] == [(10.0, round(170 / 15, 3)), (20.0, round(329 / 15, 3))]
     assert evs[0].attrs["visibility"] == "partial"
     pairs, oa, ob = match_annotators(evs, evs[:1])
     assert len(pairs) == 1 and pairs[0][2] == pytest.approx(1.0) and len(oa) == 1 and not ob
     k = cohens_kappa_bins(evs, evs, 60)
-    assert k["infant_off_surface"] == pytest.approx(1.0)
+    assert k["person_down"] == pytest.approx(1.0)
 
 
 def test_cli_cvat_import_two_annotators(tmp_path, capsys):
@@ -112,9 +121,12 @@ def test_cli_cvat_import_two_annotators(tmp_path, capsys):
     b.write_text(CVAT_XML.replace('frame="300" outside="0"', 'frame="900" outside="0"').replace('frame="330" outside="1"', 'frame="930" outside="1"'))
     out = tmp_path / "gt.json"
     assert main(["cvat-import", "--xml", str(a), "--annotator", "ann-1", "--xml", str(b), "--annotator", "ann-2",
-                 "--fps", "15", "--labels", "infant_off_surface", "--session-id", "S9", "--facility-id", "F1",
-                 "--camera-id", "cam1", "--t0", "2026-10-31T09:00:00Z", "--duration-s", "120", "--out", str(out)]) == 0
+                 "--fps", "15", "--session-id", "S9", "--facility-id", "F1",
+                 "--camera-id", "cam-dining", "--room-id", "dining", "--t0", "2026-10-31T09:00:00Z", "--duration-s", "120",
+                 "--lighting", "night", "--crowding", "normal", "--camera-view", "360", "--out", str(out)]) == 0
     g = load_ground_truth(out)
+    assert g.sessions[0].conditions == {"lighting": "night", "crowding": "normal", "camera_view": "360"}
+    assert len(g.events) == 1 and g.events[0].event_type == "person_down"  # the "person" helper track is skipped
     assert len(g.events) == 1 and g.events[0].annotators == ["ann-1", "ann-2"] and not g.events[0].adjudicated
     q = json.loads(out.with_suffix(".adjudication.json").read_text())
     assert len(q["disagreements"]) == 2  # one event each annotator marked alone
@@ -127,8 +139,23 @@ def test_cli_evaluate_writes_markdown_and_json(tmp_path):
                  "--incidents", str(EX / "incidents.replay.example.jsonl"),
                  "--out-md", str(md), "--out-json", str(js)]) == 0
     r = json.loads(js.read_text())
-    a1 = r["per_event_type"]["infant_off_surface"]
-    assert (a1["detected"], a1["inconclusive"], a1["false_positives"]) == (1, 1, 1)
+    per = r["per_event_type"]
+    for et in ("long_queue", "pos_refund_no_customer", "after_hours_intrusion", "camera_tamper", "person_down"):
+        assert per[et]["detected"] == 1, et
+    assert per["long_queue"]["latency"]["median_s"] == pytest.approx(61.0)
+    c3 = per["pos_refund_no_customer"]
+    assert c3["false_positives"] == 1 and c3["false_positives_on_hard_negatives"] == 1
+    # A false REVIEW_QUEUED prompt counts as a false alert by default.
+    assert per["restricted_zone_entry"]["false_alerts"] == 1
+    assert per["person_down"]["inconclusive_incidents_without_gt"] == 1
     assert r["go_no_go"]["decision"] == "NO-GO"
     text = md.read_text()
-    assert "Decision: NO-GO" in text and "Clopper" in text and "adult_lifts_infant" in text
+    assert "Decision: NO-GO" in text and "Clopper" in text and "refund_with_customer" in text
+
+
+def test_cli_cvat_import_rejects_unknown_labels(tmp_path):
+    a = tmp_path / "a.xml"
+    a.write_text(CVAT_XML)
+    assert main(["cvat-import", "--xml", str(a), "--annotator", "ann-1", "--fps", "15", "--labels", "infant_off_surface",
+                 "--session-id", "S9", "--facility-id", "F1", "--camera-id", "cam1", "--lighting", "day",
+                 "--crowding", "empty", "--camera-view", "wide", "--out", str(tmp_path / "gt.json")]) == 2

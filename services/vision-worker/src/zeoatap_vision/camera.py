@@ -1,9 +1,16 @@
 """One camera: connect, demux, buffer packets, decode, sample, and hand frames
 to analysis through a bounded drop-oldest queue. Reconnects forever with
-backoff; every state change is visible through status()."""
+backoff; every state change is visible through status().
+
+The packet ring is NOT cleared on reconnect: the video from before an outage
+is often the evidence that matters (camera_tamper, after_hours_intrusion).
+The ring's age and byte bounds remove stale packets. Each connection is a new
+"generation" with its own clip template, and clip.write_clip rebases
+timestamps across generations."""
 
 from __future__ import annotations
 
+import io
 import logging
 import threading
 import time
@@ -16,7 +23,7 @@ from typing import Callable
 
 import av
 
-from .clip import write_clip
+from .clip import select_packets, write_clip
 from .config import CameraConfig, redact
 from .ringbuffer import PacketRingBuffer
 from .timing import Backoff, FrameSampler
@@ -24,6 +31,10 @@ from .timing import Backoff, FrameSampler
 log = logging.getLogger(__name__)
 
 THUMB_W, THUMB_H = 160, 90
+# A clip is partial when the buffer starts more than this after the requested
+# start, or has a hole longer than CLIP_GAP_S (outage, eviction).
+CLIP_START_TOL_S = 0.5
+CLIP_GAP_S = 3.0
 
 
 class NoVideoError(RuntimeError):
@@ -50,6 +61,7 @@ class SampledFrame:
     wall_ts: float
     gray: object  # numpy uint8 thumbnail
     rgb: object = None  # numpy uint8 HxWx3, ~analysis_width wide; only when a real detector runs
+    frame_size: tuple[int, int] | None = None  # (w, h) of the analysed frame (rgb if present, else decoded)
 
 
 @dataclass
@@ -59,6 +71,20 @@ class _ClipJob:
     path: Path
     deadline: float
     future: Future = field(default_factory=Future)
+
+
+class ClipTemplate:
+    """Codec parameters of one connection, copied into a private (never
+    opened) output container so they stay valid after the input container is
+    closed. The input stream's own parameters are freed when it closes."""
+
+    def __init__(self, video):
+        self._holder = av.open(io.BytesIO(), mode="w", format="mp4")
+        self.stream = self._holder.add_stream_from_template(video)
+
+
+def _max_gap(pkts) -> float:
+    return max((b.wall_ts - a.wall_ts for a, b in zip(pkts, pkts[1:])), default=0.0)
 
 
 @dataclass
@@ -94,7 +120,8 @@ class CameraWorker:
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._template_stream = None
+        self._templates: dict[int, ClipTemplate] = {}
+        self._gen = 0
         self._clip_jobs: list[_ClipJob] = []
         self._clip_lock = threading.Lock()
         self.state_since = clock()
@@ -135,6 +162,7 @@ class CameraWorker:
         if not self._clip_jobs:
             return
         newest = self.ring.newest_ts
+        templates = {g: t.stream for g, t in list(self._templates.items())}
         with self._clip_lock:
             jobs, self._clip_jobs = self._clip_jobs, []
         keep = []
@@ -144,12 +172,16 @@ class CameraWorker:
                 keep.append(job)
                 continue
             try:
-                pkts = self.ring.snapshot(job.start, job.end)
-                if not pkts or self._template_stream is None:
+                pkts, dropped = select_packets(self.ring.snapshot(job.start, job.end), templates)
+                if not pkts:
                     raise NoVideoError("no buffered video covers the requested window")
-                sha = write_clip(pkts, self._template_stream, job.path)
+                sha = write_clip(pkts, templates, job.path)
                 self.stats.clips_written_total += 1
-                job.future.set_result((job.path, sha, not ready))
+                partial = (not ready or dropped
+                           or pkts[0].wall_ts > job.start + CLIP_START_TOL_S  # ring no longer reaches start
+                           or job.end - pkts[-1].wall_ts > CLIP_GAP_S
+                           or _max_gap(pkts) > CLIP_GAP_S)
+                job.future.set_result((job.path, sha, partial))
             except Exception as e:  # report, never crash the camera loop
                 job.future.set_exception(e)
         with self._clip_lock:
@@ -157,13 +189,15 @@ class CameraWorker:
 
     # ---- main loop -------------------------------------------------------
     def status(self) -> dict:
+        oldest, newest, nbytes, _ = self.ring.span()  # one consistent read
+        state, since = self.state, self.state_since
         return {
             "camera_id": self.cfg.id,
-            "state": self.state.value,
-            "state_since": self.state_since,
-            "ring_seconds": (self.ring.newest_ts - self.ring.oldest_ts) if len(self.ring) else 0.0,
-            "ring_bytes": self.ring.bytes,
-            **self.stats.__dict__,
+            "state": state.value,
+            "state_since": since,
+            "ring_seconds": (newest - oldest) if oldest is not None else 0.0,
+            "ring_bytes": nbytes,
+            **dict(self.stats.__dict__),
         }
 
     def _set_state(self, s: StreamState) -> None:
@@ -193,18 +227,22 @@ class CameraWorker:
             if video is None:
                 raise RuntimeError("stream has no video track")
             video.thread_type = "AUTO"
-            self.ring.clear()
-            self._template_stream = video
+            self._gen += 1
+            gen = self._gen
+            self._templates[gen] = ClipTemplate(video)
+            live = self.ring.generations() | {gen}
+            for g in [g for g in self._templates if g not in live]:
+                del self._templates[g]
             try:
-                self._demux(container, video)
+                self._demux(container, video, gen)
             finally:
-                # Write pending clips while the stream template is still valid;
-                # the ring is cleared on reconnect, so they are marked partial.
+                # The stream is gone: write pending clips now with what was
+                # buffered; they end early, so they are marked partial.
                 self._finish_clip_jobs(force=True)
         if not self._stop.is_set():
             raise ConnectionError("stream ended")
 
-    def _demux(self, container, video) -> None:
+    def _demux(self, container, video, gen: int = 0) -> None:
         first_packet = True
         for packet in container.demux(video):
             if self._stop.is_set():
@@ -217,7 +255,7 @@ class CameraWorker:
                 self.backoff.reset()
                 first_packet = False
             self.stats.packets_total += 1
-            self.ring.append(packet, now)
+            self.ring.append(packet, now, gen)
             try:
                 frames = packet.decode()
             except av.error.InvalidDataError:
@@ -227,10 +265,10 @@ class CameraWorker:
                 self.stats.frames_decoded_total += 1
                 if self.sampler.should_sample(now):
                     gray = frame.reformat(width=THUMB_W, height=THUMB_H, format="gray").to_ndarray()
-                    rgb = None
+                    rgb, size = None, (frame.width, frame.height)
                     if self.analysis_width:
-                        w, h = analysis_size(frame.width, frame.height, self.analysis_width)
-                        rgb = frame.reformat(width=w, height=h, format="rgb24").to_ndarray()
+                        size = analysis_size(frame.width, frame.height, self.analysis_width)
+                        rgb = frame.reformat(width=size[0], height=size[1], format="rgb24").to_ndarray()
                     self.stats.frames_sampled_total += 1
-                    self._offer(SampledFrame(self.cfg.id, now, gray, rgb))
+                    self._offer(SampledFrame(self.cfg.id, now, gray, rgb, size))
             self._finish_clip_jobs()

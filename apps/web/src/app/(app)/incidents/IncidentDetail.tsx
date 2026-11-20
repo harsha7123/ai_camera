@@ -6,10 +6,11 @@ import { AckButton } from "@/components/AckButton";
 import { Icon } from "@/components/Icon";
 import { Badge, ErrorState, Loading, SeverityBadge, Skeleton } from "@/components/ui";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { useApp } from "@/lib/store";
+import { useApp, useNow } from "@/lib/store";
 import {
   DISPOSITIONS,
   DISPOSITION_LABEL,
+  FAMILY_LABEL,
   LIFECYCLE_LABEL,
   STATUS_LABEL,
   durationSeconds,
@@ -18,6 +19,8 @@ import {
   formatDateTime,
   formatTime,
   humanize,
+  needsAck,
+  timeOf,
 } from "@/lib/present";
 import type { ClipFailedEvent, ClipReadyEvent, ClipToken, Disposition, Incident } from "@/lib/types";
 
@@ -27,7 +30,7 @@ const ACTION_LABEL: Record<string, string> = {
   escalated: "Escalated",
   legal_hold_set: "Legal hold set",
   legal_hold_released: "Legal hold released",
-  merged: "Merged with another observation",
+  merged: "Merged with another detection",
   clip_viewed: "Clip viewed",
 };
 
@@ -45,7 +48,7 @@ function ClipPlayer({ incident, cameraId, onRefresh }: { incident: Incident; cam
     return (
       <div className="clip-box clip-locked" data-testid="clip-locked">
         <Icon name="lock" />
-        <p>Your role cannot view evidence clips. A room lead or reviewer can review this incident.</p>
+        <p>Your role cannot view clips. A manager or the owner can review this incident.</p>
       </div>
     );
   }
@@ -67,22 +70,20 @@ function ClipPlayer({ incident, cameraId, onRefresh }: { incident: Incident; cam
     );
   }
 
-  // A <video> error does not expose the HTTP status, so ask the server once why playback failed.
-  const explainFailure = async (url: string) => {
-    let status = 0;
-    try {
-      status = (await fetch(url, { headers: { Range: "bytes=0-0" }, credentials: "same-origin", cache: "no-store" })).status;
-    } catch {
-      /* network */
+  // A <video> error does not expose the HTTP status, and probing the media URL
+  // again would be another (audited) request for the clip. Instead, re-read the
+  // incident (a clip deleted under retention then shows as deleted) and explain
+  // the possible causes; "Request new access" asks the token endpoint, whose
+  // status (403/410/401) is reported precisely.
+  const explainFailure = (t: ClipToken) => {
+    onRefresh();
+    if (Date.parse(t.expires_at) <= Date.now()) {
+      setError("The access link has expired (links last 5 minutes).");
+      return;
     }
-    if (status === 410) {
-      setGone(true);
-      setError("This clip was deleted under the retention policy.");
-    } else if (status === 403) setError("The access link has expired or your access has changed (links last 5 minutes).");
-    else if (status === 503) setError("Playback is blocked because this view could not be recorded in the audit log. Try again in a moment.");
-    else if (status === 401) setError("Your session has ended. Sign in again to view clips.");
-    else if (status >= 200 && status < 300) setError("This browser cannot play the clip format. Try another browser or device.");
-    else setError("The clip could not be played. Check the connection and request access again.");
+    setError(
+      "The clip could not be played. The clip may have been removed, your access may have changed, or this view could not be recorded in the audit log (playback is blocked until it can be). Request new access to try again.",
+    );
   };
 
   const request = async () => {
@@ -92,7 +93,8 @@ function ClipPlayer({ incident, cameraId, onRefresh }: { incident: Incident; cam
       setToken(await api.post<ClipToken>(`/api/v1/clips/${encodeURIComponent(clip.id)}/token`, {}));
     } catch (e) {
       if (e instanceof ApiError && e.status === 410) setGone(true);
-      setError(errorMessage(e));
+      if (e instanceof ApiError && e.status === 401) setError("Your session has ended. Sign in again to view clips.");
+      else setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -110,7 +112,7 @@ function ClipPlayer({ incident, cameraId, onRefresh }: { incident: Incident; cam
             preload="metadata"
             className="clip-video"
             data-testid="clip-video"
-            onError={() => void explainFailure(token.url)}
+            onError={() => explainFailure(token)}
           >
             Your browser cannot play this clip.
           </video>
@@ -167,7 +169,7 @@ function DispositionForm({ incident, onSaved, onConflict }: { incident: Incident
       onSaved(updated);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError("Another reviewer resolved this incident first. Their disposition is shown above; yours was not saved.");
+        setError("Someone else resolved this incident first. Their disposition is shown above; yours was not saved.");
         onConflict();
       } else {
         setError(errorMessage(err));
@@ -187,7 +189,7 @@ function DispositionForm({ incident, onSaved, onConflict }: { incident: Incident
           {incident.resolved_by ? ` by ${incident.resolved_by}` : ""} {incident.resolved_at ? `at ${formatTime(incident.resolved_at)}` : ""}. A disposition is final and cannot be changed.
         </p>
       ) : (
-        <p className="muted small">A disposition is final once submitted. Record what you observed in the clip, not conclusions about people.</p>
+        <p className="muted small">A disposition is final once submitted. Record what you saw in the clip, not conclusions about people. Never discipline, report or deduct pay on an alert alone.</p>
       )}
       <fieldset disabled={resolved || busy}>
         <legend className="sr-only">Disposition</legend>
@@ -213,7 +215,7 @@ function DispositionForm({ incident, onSaved, onConflict }: { incident: Incident
         </div>
         <label className="field">
           <span>Note (optional)</span>
-          <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} placeholder="What you observed; actions taken per facility policy." />
+          <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} placeholder="What the clip shows; POS records checked; follow-up per your policy." />
         </label>
         {error ? (
           <p className="notice notice-error" role="alert" data-testid="disposition-error">
@@ -247,28 +249,66 @@ function DispositionForm({ incident, onSaved, onConflict }: { incident: Incident
 function LegalHold({ incident, onSaved }: { incident: Incident; onSaved: (i: Incident) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const toggle = async () => {
+  const [confirmRelease, setConfirmRelease] = useState(false);
+  const now = useNow();
+  const save = async (hold: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      onSaved(await api.post<Incident>(`/api/v1/incidents/${encodeURIComponent(incident.id)}/hold`, { hold: !incident.legal_hold }));
+      onSaved(await api.post<Incident>(`/api/v1/incidents/${encodeURIComponent(incident.id)}/hold`, { hold }));
+      setConfirmRelease(false);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   };
+  // Setting a hold is safe (it only keeps evidence longer); releasing it can make
+  // the evidence eligible for deletion, so it needs a second, explicit step.
+  const toggle = () => {
+    if (incident.legal_hold) setConfirmRelease(true);
+    else void save(true);
+  };
+  const deadlinePassed = timeOf(incident.retention_deadline) <= now;
   return (
     <section className="card" aria-labelledby="hold-h">
       <h2 id="hold-h">Legal hold</h2>
       <div className="switch-row">
-        <button type="button" role="switch" aria-checked={incident.legal_hold} className="switch" onClick={() => void toggle()} disabled={busy} data-testid="legal-hold" aria-labelledby="hold-label">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={incident.legal_hold}
+          className="switch"
+          onClick={toggle}
+          disabled={busy || confirmRelease}
+          data-testid="legal-hold"
+          aria-label="Legal hold"
+          aria-describedby="hold-desc"
+        >
           <span className="switch-knob" aria-hidden="true" />
         </button>
-        <span id="hold-label">
-          <strong>{incident.legal_hold ? "On" : "Off"}</strong> — {incident.legal_hold ? "evidence is kept beyond the retention deadline." : `evidence is deleted after ${formatDateTime(incident.retention_deadline)}.`}
+        <span id="hold-desc">
+          <strong aria-hidden="true">{incident.legal_hold ? "On" : "Off"}</strong> —{" "}
+          {incident.legal_hold ? "evidence is kept beyond the retention deadline." : `evidence is deleted after ${formatDateTime(incident.retention_deadline)}.`}
         </span>
       </div>
+      {confirmRelease ? (
+        <div className="confirm-row" role="group" aria-label="Confirm releasing the legal hold" data-testid="hold-release-confirm">
+          <p>
+            Release the legal hold?{" "}
+            {deadlinePassed
+              ? "The retention deadline has already passed, so the clips can be deleted at the next retention run."
+              : `The clips will then be deleted after ${formatDateTime(incident.retention_deadline)}.`}{" "}
+            Only release it when the matter (claim, dispute, investigation) is closed.
+          </p>
+          <button type="button" className="btn btn-primary" onClick={() => void save(false)} disabled={busy} data-testid="hold-release-yes">
+            {busy ? "Releasing…" : "Release legal hold"}
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => setConfirmRelease(false)} disabled={busy}>
+            Keep the hold
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <p className="notice notice-error" role="alert">
           {error}
@@ -356,15 +396,15 @@ export function IncidentDetail({ id }: { id: string }) {
   const activeCam = camera && cams.includes(camera) ? camera : (cams[0] ?? null);
   const dur = durationSeconds(inc.start, inc.end);
   const timeline = [
-    { at: inc.start, actor: "system", label: "Observation started", note: null as string | null },
-    { at: inc.end, actor: "system", label: "Observation ended", note: null },
+    { at: inc.start, actor: "system", label: "Detection started", note: null as string | null },
+    { at: inc.end, actor: "system", label: "Detection ended", note: null },
     ...(inc.actions ?? []).map((a) => ({
       at: a.at,
       actor: a.actor,
       label: `${ACTION_LABEL[a.action] ?? humanize(a.action)}${a.disposition ? `: ${DISPOSITION_LABEL[a.disposition] ?? a.disposition}` : ""}`,
       note: a.note,
     })),
-  ].sort((a, b) => a.at.localeCompare(b.at));
+  ].sort((a, b) => timeOf(a.at) - timeOf(b.at));
 
   return (
     <article className="detail" data-testid="incident-detail" data-incident={inc.id} data-lifecycle={inc.lifecycle}>
@@ -383,16 +423,23 @@ export function IncidentDetail({ id }: { id: string }) {
           </span>
           {inc.escalation_level > 0 ? <span className="chip chip-strong">Escalated · level {inc.escalation_level}</span> : null}
           {inc.legal_hold ? <span className="chip">Legal hold</span> : null}
+          {inc.pos_ref ? (
+            <span className="chip" data-testid="detail-pos-ref">
+              POS ticket {inc.pos_ref}
+            </span>
+          ) : null}
           {inc.source === "MOCK" ? <span className="chip">Test data (mock source)</span> : null}
         </div>
       </header>
 
       <p className="notice notice-review" role="note" data-testid="not-a-finding">
-        <Icon name="bang" size={18} /> This is an automated observation requiring human review. It is not a finding.
+        <Icon name="bang" size={18} /> AI flags, humans decide. This is an automated prompt for review, not a finding about any person.
       </p>
 
       <div className="ack-strip">
-        {inc.lifecycle === "new" ? (
+        {inc.status === "SHADOW" && inc.lifecycle === "new" ? (
+          <span data-testid="shadow-info">Shadow mode: this rule is being tuned, so nobody was alerted and no acknowledgement is needed.</span>
+        ) : needsAck(inc) ? (
           <>
             <span>Not yet acknowledged.</span>
             <AckButton incident={inc} onDone={saved} />
@@ -407,7 +454,7 @@ export function IncidentDetail({ id }: { id: string }) {
 
       <div className="detail-grid">
         <section className="card" aria-labelledby="clip-h">
-          <h2 id="clip-h">Evidence clips</h2>
+          <h2 id="clip-h">Clips</h2>
           {cams.length > 1 ? (
             <div className="segmented" role="group" aria-label="Camera">
               {cams.map((c) => (
@@ -421,9 +468,18 @@ export function IncidentDetail({ id }: { id: string }) {
         </section>
 
         <section className="card" aria-labelledby="ev-h" data-testid="evidence-summary">
-          <h2 id="ev-h">Evidence summary</h2>
+          <h2 id="ev-h">What was detected</h2>
           <p>{inc.detail || "No description was provided by the engine."}</p>
           <dl className="kv">
+            {inc.pos_ref ? (
+              <>
+                <dt>POS ticket</dt>
+                <dd>
+                  <code data-testid="pos-ref">{inc.pos_ref}</code>
+                  <span className="muted small"> · check it against the POS journal before drawing conclusions</span>
+                </dd>
+              </>
+            ) : null}
             <dt>Window</dt>
             <dd className="tabular">
               {formatTime(inc.start)} – {formatTime(inc.end)}
@@ -437,7 +493,8 @@ export function IncidentDetail({ id }: { id: string }) {
             <dd data-testid="uncertainty">{inc.uncertainty ? humanize(inc.uncertainty) : "Not reported — treat as uncertain."}</dd>
             <dt>Rule</dt>
             <dd>
-              <code>{inc.rule_version}</code> (family {inc.family})
+              <code>{inc.rule_version}</code> (family {inc.family}
+              {FAMILY_LABEL[inc.family] ? ` · ${FAMILY_LABEL[inc.family]}` : ""})
             </dd>
             <dt>Models</dt>
             <dd data-testid="model-versions">
@@ -482,7 +539,7 @@ export function IncidentDetail({ id }: { id: string }) {
               <Badge tone="neutral" icon="check">
                 {DISPOSITION_LABEL[inc.disposition]}
               </Badge>{" "}
-              recorded by {inc.resolved_by ?? "a reviewer"}.
+              recorded by {inc.resolved_by ?? "a manager"}.
             </p>
           </section>
         ) : null}

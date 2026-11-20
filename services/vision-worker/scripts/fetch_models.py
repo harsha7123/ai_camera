@@ -9,7 +9,7 @@ source URL, license and hashes is written to models/manifest.json.
   uv run python scripts/fetch_models.py --all           # also the -tiny / -s variants
   uv run python scripts/fetch_models.py --test-media    # also the adult test photo (tests only)
 
-The models are public pretrained weights, UNVALIDATED for infants or CCTV.
+The models are public pretrained weights, UNVALIDATED on restaurant CCTV.
 Licenses: see MODELS.md.
 """
 
@@ -34,7 +34,7 @@ MAX_BYTES = 300 * 1024 * 1024
 LICENSES = {
     "detector": {
         "code_license": "Apache-2.0 (open-mmlab/mmpose, mmdetection; Megvii YOLOX)",
-        "weights": "COCO + Human-Art trained person detector (Human-Art dataset terms apply; see MODELS.md)",
+        "weights": "COCO + Human-Art trained person detector (COCO and Human-Art dataset terms apply; see MODELS.md)",
     },
     "pose": {
         "code_license": "Apache-2.0 (open-mmlab/mmpose; rtmlib)",
@@ -91,7 +91,7 @@ def fetch_model(name: str, out: Path, manifest: dict) -> None:
         "input_size_wh": list(spec.input_size),
         "version": spec.version,
         **LICENSES[spec.kind],
-        "validated_for_infants_or_cctv": False,
+        "validated_on_restaurant_cctv": False,
     }
 
 
@@ -120,8 +120,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     mf = out / "manifest.json"
     manifest = json.loads(mf.read_text()) if mf.exists() else {}
-    # FiDIP (kind infant_pose) is exported by scripts/export_fidip.py, not fetched here.
-    names = [n for n, s in MODELS.items() if s.onnx_sha256] if args.all else [DEFAULT_DETECTOR, DEFAULT_POSE]
+    names = list(MODELS) if args.all else [DEFAULT_DETECTOR, DEFAULT_POSE]
     for n in names:
         fetch_model(n, out, manifest)
         mf.write_text(json.dumps(manifest, indent=2) + "\n")

@@ -1,7 +1,7 @@
 [project]
 name = "zeoatap-eval"
 version = "0.1.0"
-description = "Event-level safety evaluation harness (SAFETY_VALIDATION §4-§7)"
+description = "Event-level accuracy evaluation harness for the restaurant event types"
 requires-python = ">=3.12"
 dependencies = [
   "numpy==2.3.4",

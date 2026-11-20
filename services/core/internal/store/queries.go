@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -27,7 +27,8 @@ type Camera struct {
 	ID                 string             `json:"id"`
 	RoomID             string             `json:"room_id"`
 	Name               string             `json:"name"`
-	Protected          bool               `json:"protected"`
+	Priority           bool               `json:"priority"`   // register/POS camera, analysed at 15 fps
+	StaffOnly          bool               `json:"staff_only"` // kitchen/back of house: everyone seen is staff
 	Zones              []eventengine.Zone `json:"zones"`
 	AuthorizedBy       string             `json:"authorized_by"`
 	AuthorizedAt       string             `json:"authorized_at"` // YYYY-MM-DD
@@ -38,7 +39,7 @@ type Camera struct {
 }
 
 func (c Camera) EngineCamera() eventengine.Camera {
-	return eventengine.Camera{ID: c.ID, RoomID: c.RoomID, Zones: c.Zones}
+	return eventengine.Camera{ID: c.ID, RoomID: c.RoomID, StaffOnly: c.StaffOnly, Zones: c.Zones}
 }
 
 func (d *DB) UpsertFacility(ctx context.Context, id, name string) error {
@@ -58,12 +59,13 @@ func (d *DB) UpsertCamera(ctx context.Context, c Camera) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.Pool.Exec(ctx, `INSERT INTO cameras (id, room_id, name, protected, zones, authorized_by,
-		authorized_at, authorization_scope, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7::date,$8,$9)
-		ON CONFLICT (id) DO UPDATE SET room_id=EXCLUDED.room_id, name=EXCLUDED.name, protected=EXCLUDED.protected,
+	_, err = d.Pool.Exec(ctx, `INSERT INTO cameras (id, room_id, name, priority, staff_only, zones, authorized_by,
+		authorized_at, authorization_scope, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10)
+		ON CONFLICT (id) DO UPDATE SET room_id=EXCLUDED.room_id, name=EXCLUDED.name, priority=EXCLUDED.priority,
+		staff_only=EXCLUDED.staff_only,
 		zones=EXCLUDED.zones, authorized_by=EXCLUDED.authorized_by, authorized_at=EXCLUDED.authorized_at,
 		authorization_scope=EXCLUDED.authorization_scope, enabled=EXCLUDED.enabled`,
-		c.ID, c.RoomID, c.Name, c.Protected, zones, c.AuthorizedBy, c.AuthorizedAt, c.AuthorizationScope, c.Enabled)
+		c.ID, c.RoomID, c.Name, c.Priority, c.StaffOnly, zones, c.AuthorizedBy, c.AuthorizedAt, c.AuthorizationScope, c.Enabled)
 	return err
 }
 
@@ -74,9 +76,9 @@ func (d *DB) InsertCamera(ctx context.Context, c Camera) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.Pool.Exec(ctx, `INSERT INTO cameras (id, room_id, name, protected, zones, authorized_by,
-		authorized_at, authorization_scope, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7::date,$8,$9)`,
-		c.ID, c.RoomID, c.Name, c.Protected, zones, c.AuthorizedBy, c.AuthorizedAt, c.AuthorizationScope, c.Enabled)
+	_, err = d.Pool.Exec(ctx, `INSERT INTO cameras (id, room_id, name, priority, staff_only, zones, authorized_by,
+		authorized_at, authorization_scope, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::date,$9,$10)`,
+		c.ID, c.RoomID, c.Name, c.Priority, c.StaffOnly, zones, c.AuthorizedBy, c.AuthorizedAt, c.AuthorizationScope, c.Enabled)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
@@ -117,7 +119,7 @@ func (d *DB) Rooms(ctx context.Context) ([]Room, error) {
 }
 
 func (d *DB) Cameras(ctx context.Context) ([]Camera, error) {
-	rows, err := d.Pool.Query(ctx, `SELECT c.id, c.room_id, c.name, c.protected, c.zones, c.authorized_by,
+	rows, err := d.Pool.Query(ctx, `SELECT c.id, c.room_id, c.name, c.priority, c.staff_only, c.zones, c.authorized_by,
 		to_char(c.authorized_at, 'YYYY-MM-DD'), c.authorization_scope, c.enabled, s.state, s.since
 		FROM cameras c LEFT JOIN camera_states s ON s.camera_id = c.id ORDER BY c.room_id, c.id`)
 	if err != nil {
@@ -127,7 +129,7 @@ func (d *DB) Cameras(ctx context.Context) ([]Camera, error) {
 		var c Camera
 		var zones []byte
 		var state *string
-		if err := r.Scan(&c.ID, &c.RoomID, &c.Name, &c.Protected, &zones, &c.AuthorizedBy, &c.AuthorizedAt,
+		if err := r.Scan(&c.ID, &c.RoomID, &c.Name, &c.Priority, &c.StaffOnly, &zones, &c.AuthorizedBy, &c.AuthorizedAt,
 			&c.AuthorizationScope, &c.Enabled, &state, &c.StateSince); err != nil {
 			return c, err
 		}
@@ -189,7 +191,7 @@ func scanView(row pgx.Row) (*IncidentView, error) {
 	var models []byte
 	var status string
 	err := row.Scan(&v.ID, &v.IdempotencyKey, &v.RoomID, &v.RoomZone, &v.EventType, &v.Family, &v.Start, &v.End,
-		&v.Cameras, &status, &v.RuleVersion, &models, &v.Source, &v.Detail, &v.Lifecycle, &v.EscalationLevel,
+		&v.Cameras, &status, &v.RuleVersion, &models, &v.Source, &v.Detail, &v.PosRef, &v.Lifecycle, &v.EscalationLevel,
 		&v.AcknowledgedBy, &v.AcknowledgedAt, &v.Disposition, &v.ResolvedBy, &v.ResolvedAt, &v.CreatedAt,
 		&v.RetentionUntil, &v.LegalHold)
 	if err != nil {
@@ -205,17 +207,22 @@ func scanView(row pgx.Row) (*IncidentView, error) {
 type IncidentFilter struct {
 	OpenOnly      bool
 	IncludeShadow bool
+	PosRef        string // exact POS ticket match (complaint / chargeback lookup)
 	Limit         int
 }
 
 func (d *DB) Incidents(ctx context.Context, f IncidentFilter) ([]IncidentView, error) {
-	if f.Limit <= 0 || f.Limit > 500 {
+	if f.Limit <= 0 {
 		f.Limit = 200
+	}
+	if f.Limit > 1000 {
+		f.Limit = 1000
 	}
 	rows, err := d.Pool.Query(ctx, `SELECT `+viewCols+` FROM incidents
 		WHERE ($1 = false OR lifecycle <> 'resolved') AND ($2 = true OR status <> 'SHADOW')
+		  AND ($4 = '' OR pos_ref = $4)
 		ORDER BY CASE WHEN status='ALERTED' AND lifecycle='new' THEN 0 ELSE 1 END, start_ts DESC
-		LIMIT $3`, f.OpenOnly, f.IncludeShadow, f.Limit)
+		LIMIT $3`, f.OpenOnly, f.IncludeShadow, f.Limit, f.PosRef)
 	if err != nil {
 		return nil, err
 	}
@@ -652,4 +659,146 @@ func (d *DB) AuditEntries(ctx context.Context, limit int) ([]AuditEntry, error) 
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[AuditEntry])
+}
+
+// UserByID loads one user.
+func (d *DB) UserByID(ctx context.Context, id int64) (*User, error) {
+	var u User
+	err := d.Pool.QueryRow(ctx, `SELECT id, username, display_name, role, password_hash, disabled FROM users WHERE id=$1`,
+		id).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.PasswordHash, &u.Disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// UserUpdate holds the fields an admin may change; nil means unchanged.
+type UserUpdate struct {
+	DisplayName  *string
+	Role         *string
+	Disabled     *bool
+	PasswordHash *string
+}
+
+// UpdateUser applies an admin edit. When access changes (role, disabled,
+// password), every session of the user is ended in the same transaction, so
+// an offboarded employee is signed out immediately.
+func (d *DB) UpdateUser(ctx context.Context, id int64, u UserUpdate) (*User, error) {
+	var out *User
+	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		var nu User
+		err := tx.QueryRow(ctx, `UPDATE users SET
+			display_name = coalesce($2, display_name),
+			role = coalesce($3, role),
+			disabled = coalesce($4, disabled),
+			password_hash = coalesce($5, password_hash)
+			WHERE id=$1 RETURNING id, username, display_name, role, password_hash, disabled`,
+			id, u.DisplayName, u.Role, u.Disabled, u.PasswordHash).
+			Scan(&nu.ID, &nu.Username, &nu.DisplayName, &nu.Role, &nu.PasswordHash, &nu.Disabled)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if u.Role != nil || u.Disabled != nil || u.PasswordHash != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, id); err != nil {
+				return err
+			}
+		}
+		out = &nu
+		return nil
+	})
+	return out, err
+}
+
+// ---- POS events --------------------------------------------------------------
+
+// InsertPOSEvent stores a POS event. It returns false (and no error) if an
+// event with the same id was already received, so resends are ignored.
+func (d *DB) InsertPOSEvent(ctx context.Context, ev eventengine.POSEvent) (bool, error) {
+	tag, err := d.Pool.Exec(ctx, `INSERT INTO pos_events (id, register_id, type, ts, amount_cents, ticket_ref, employee_ref)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,'')) ON CONFLICT (id) DO NOTHING`,
+		ev.ID, ev.RegisterID, ev.Type, ev.TS, ev.AmountCents, ev.TicketRef, ev.EmployeeRef)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ---- access log & traffic ------------------------------------------------------
+
+type ZoneAccessRow struct {
+	ID         int64     `json:"id"`
+	CameraID   string    `json:"camera_id"`
+	RoomID     string    `json:"room_id"`
+	RoomZone   string    `json:"room_zone"`
+	ZoneID     string    `json:"zone_id"`
+	Role       string    `json:"role"`
+	Start      time.Time `json:"start"`
+	End        time.Time `json:"end"`
+	AfterHours bool      `json:"after_hours"`
+}
+
+func (d *DB) InsertZoneAccess(ctx context.Context, a eventengine.ZoneAccess) error {
+	_, err := d.Pool.Exec(ctx, `INSERT INTO zone_access (camera_id, room_id, room_zone, zone_id, role, start_ts, end_ts, after_hours)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (camera_id, zone_id, start_ts) DO NOTHING`,
+		a.CameraID, a.RoomID, a.RoomZone, a.ZoneID, string(a.Role), a.Start, a.End, a.AfterHours)
+	return err
+}
+
+func (d *DB) AccessLog(ctx context.Context, from, to time.Time, limit int) ([]ZoneAccessRow, error) {
+	rows, err := d.Pool.Query(ctx, `SELECT id, camera_id, room_id, room_zone, zone_id, role, start_ts, end_ts, after_hours
+		FROM zone_access WHERE start_ts >= $1 AND start_ts < $2 ORDER BY start_ts DESC LIMIT $3`, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[ZoneAccessRow])
+}
+
+// AddTraffic adds crossings to a bucket and raises its peak occupancy.
+func (d *DB) AddTraffic(ctx context.Context, t eventengine.TrafficDelta) error {
+	_, err := d.Pool.Exec(ctx, `INSERT INTO traffic_counts (camera_id, bucket_start, entries, exits, peak_occupancy)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT (camera_id, bucket_start) DO UPDATE SET
+		entries = traffic_counts.entries + EXCLUDED.entries,
+		exits = traffic_counts.exits + EXCLUDED.exits,
+		peak_occupancy = GREATEST(traffic_counts.peak_occupancy, EXCLUDED.peak_occupancy)`,
+		t.CameraID, t.Bucket, t.Entries, t.Exits, t.PeakOccupancy)
+	return err
+}
+
+type TrafficRow struct {
+	CameraID      string    `json:"camera_id"`
+	Start         time.Time `json:"start"`
+	Entries       int       `json:"entries"`
+	Exits         int       `json:"exits"`
+	PeakOccupancy int       `json:"peak_occupancy"`
+}
+
+func (d *DB) Traffic(ctx context.Context, from, to time.Time) ([]TrafficRow, error) {
+	rows, err := d.Pool.Query(ctx, `SELECT camera_id, bucket_start, entries, exits, peak_occupancy FROM traffic_counts
+		WHERE bucket_start >= $1 AND bucket_start < $2 ORDER BY bucket_start, camera_id`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[TrafficRow])
+}
+
+// ClipExists reports whether a clip record exists for this incident and
+// camera, so evidence is never captured (and overwritten) twice.
+func (d *DB) ClipExists(ctx context.Context, incidentID, cameraID string) (bool, error) {
+	var ok bool
+	err := d.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM evidence_clips WHERE incident_id=$1 AND camera_id=$2)`,
+		incidentID, cameraID).Scan(&ok)
+	return ok, err
+}
+
+// DeletePOSEvent removes a stored POS event that could not be handed to the
+// engine, so the connector's retry is processed rather than deduplicated.
+func (d *DB) DeletePOSEvent(ctx context.Context, id string) error {
+	_, err := d.Pool.Exec(ctx, `DELETE FROM pos_events WHERE id=$1`, id)
+	return err
 }

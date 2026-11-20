@@ -8,6 +8,15 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Icon } from "@/components/Icon";
 import type { User } from "@/lib/types";
 
+function loginError(err: unknown): string {
+  if (err instanceof ApiError && err.status === 401) return "Incorrect username or password. Check both and try again.";
+  if (err instanceof ApiError && err.status === 429) {
+    const mins = err.retryAfter ? Math.max(1, Math.ceil(err.retryAfter / 60)) : 15;
+    return `Too many failed sign-in attempts. Sign-in is locked for about ${mins} ${mins === 1 ? "minute" : "minutes"}. Try again later, or ask the owner or an administrator to check your account.`;
+  }
+  return errorMessage(err);
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -31,7 +40,7 @@ function LoginForm() {
       markSignedIn(true);
       router.replace(next);
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 401 ? "Incorrect username or password. Check both and try again." : errorMessage(err));
+      setError(loginError(err));
       setBusy(false);
     }
   }
@@ -44,7 +53,7 @@ function LoginForm() {
         </span>
         <div>
           <h1>Zeoatap</h1>
-          <p className="muted">Staff dashboard · safety support</p>
+          <p className="muted">Restaurant Watchdog · alerts, traffic and access log</p>
         </div>
       </div>
       {expired ? (
@@ -69,7 +78,7 @@ function LoginForm() {
         {busy ? "Signing in…" : "Sign in"}
       </button>
       <p className="muted small">
-        Zeoatap supports staff supervision; it does not replace it. Shared device? Sign out when you leave.
+        AI flags, humans decide: alerts are prompts to review, not findings. Shared device? Sign out when you leave.
       </p>
     </form>
   );

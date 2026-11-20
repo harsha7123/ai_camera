@@ -1,72 +1,169 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "dataset": {
     "id": "example-synthetic",
-    "version": "0.1",
+    "version": "0.2",
     "split": "synthetic",
     "locked": false,
-    "notes": "Illustrative only. Synthetic timings, no footage, no children."
+    "notes": "Illustrative only. Synthetic timings for the Harbor Grill example site; no footage, no real people."
   },
   "sessions": [
     {
       "session_id": "S-0001",
-      "facility_id": "F-7c2e",
-      "camera_id": "cam1",
-      "room_id": "infants-a",
-      "subject": "manikin-M2",
-      "consent_ids": [],
-      "t0": "2026-10-31T09:00:00Z",
-      "recording": {"resolution": "1280x720", "fps": 15, "codec": "h264", "source_file": "S-0001.mp4"},
-      "conditions": {"lighting": "day", "occlusion": "none", "camera_angle": "high_oblique", "camera_height_m": 2.4},
-      "operating_span": {"start_s": 0, "end_s": 600},
+      "facility_id": "F-harbor",
+      "camera_id": "cam-counter",
+      "room_id": "counter",
+      "subject": "actor-A2",
+      "consent_ids": [
+        "ACK-0001",
+        "ACK-0002"
+      ],
+      "t0": "2026-10-31T16:00:00Z",
+      "recording": {
+        "resolution": "1920x1080",
+        "fps": 15,
+        "codec": "h264",
+        "source_file": "S-0001.mp4"
+      },
+      "conditions": {
+        "lighting": "day",
+        "crowding": "rush",
+        "camera_view": "overhead",
+        "camera_height_m": 2.8
+      },
+      "operating_span": {
+        "start_s": 0,
+        "end_s": 900
+      },
       "events": [
         {
           "id": "S-0001-E001",
-          "event_type": "infant_off_surface",
-          "room_zone": "changing-table-1",
-          "start_s": 120.4,
-          "end_s": 121.6,
-          "visibility": "visible",
-          "annotator_confidence": "certain",
-          "annotators": ["ann-03", "ann-07"],
+          "event_type": "long_queue",
+          "room_zone": "counter-queue",
+          "start_s": 120.0,
+          "end_s": 300.0,
+          "visibility": "partial",
+          "annotator_confidence": "likely",
+          "annotators": [
+            "ann-03",
+            "ann-07"
+          ],
           "adjudicated": true,
-          "adjudicator": "rev-01"
+          "adjudicator": "rev-01",
+          "notes": "5-7 people in the queue zone from 120 s"
         },
         {
           "id": "S-0001-E002",
-          "event_type": "adult_in_restricted_zone",
-          "room_zone": "kitchen-door",
-          "start_s": 300.0,
-          "end_s": 312.5,
-          "visibility": "partial",
-          "annotator_confidence": "likely",
-          "annotators": ["ann-03", "ann-07"],
+          "event_type": "pos_refund_no_customer",
+          "room_zone": "register-1",
+          "start_s": 610.0,
+          "end_s": 611.0,
+          "pos_ref": "T-1042",
+          "visibility": "visible",
+          "annotator_confidence": "certain",
+          "annotators": [
+            "ann-03",
+            "ann-07"
+          ],
           "adjudicated": true,
-          "conditions": {"occlusion": "partial"}
+          "conditions": {
+            "crowding": "normal"
+          }
         }
       ],
       "hard_negatives": [
-        {"id": "S-0001-H001", "label": "adult_lifts_infant", "start_s": 400.0, "end_s": 404.0}
+        {
+          "id": "S-0001-H001",
+          "label": "refund_with_customer",
+          "start_s": 700.0,
+          "end_s": 702.0,
+          "notes": "refund T-1051 with the customer at the counter"
+        }
       ]
     },
     {
       "session_id": "S-0002",
-      "facility_id": "F-7c2e",
-      "camera_id": "cam2",
-      "room_id": "infants-a",
-      "conditions": {"lighting": "ir", "occlusion": "none", "camera_angle": "overhead"},
-      "operating_span": {"start": "2026-10-31T21:00:00Z", "end": "2026-10-31T21:10:00Z"},
+      "facility_id": "F-harbor",
+      "camera_id": "cam-back",
+      "room_id": "back",
+      "conditions": {
+        "lighting": "after_hours_dark",
+        "crowding": "empty",
+        "camera_view": "wide"
+      },
+      "operating_span": {
+        "start": "2026-11-01T07:00:00Z",
+        "end": "2026-11-01T07:10:00Z"
+      },
       "events": [
         {
           "id": "S-0002-E001",
-          "event_type": "infant_off_surface",
-          "room_zone": "crib-3",
-          "start": "2026-10-31T21:04:10.000Z",
-          "end": "2026-10-31T21:04:11.200Z",
+          "event_type": "after_hours_intrusion",
+          "room_zone": "back-door",
+          "start": "2026-11-01T07:03:10.000Z",
+          "end": "2026-11-01T07:04:40.000Z",
           "visibility": "visible",
           "annotator_confidence": "certain",
-          "annotators": ["ann-03", "ann-07"],
+          "annotators": [
+            "ann-03",
+            "ann-07"
+          ],
           "adjudicated": true
+        },
+        {
+          "id": "S-0002-E002",
+          "event_type": "camera_tamper",
+          "start": "2026-11-01T07:06:00.000Z",
+          "end": "2026-11-01T07:07:30.000Z",
+          "visibility": "not_visible",
+          "annotator_confidence": "certain",
+          "annotators": [
+            "ann-03",
+            "ann-07"
+          ],
+          "adjudicated": true,
+          "notes": "lens covered with a cloth"
+        }
+      ]
+    },
+    {
+      "session_id": "S-0003",
+      "facility_id": "F-harbor",
+      "camera_id": "cam-dining",
+      "room_id": "dining",
+      "t0": "2026-10-31T23:30:00Z",
+      "conditions": {
+        "lighting": "night",
+        "crowding": "normal",
+        "camera_view": "360"
+      },
+      "operating_span": {
+        "start_s": 0,
+        "end_s": 600
+      },
+      "events": [
+        {
+          "id": "S-0003-E001",
+          "event_type": "person_down",
+          "room_zone": "dining-floor",
+          "start_s": 200.0,
+          "end_s": 215.0,
+          "visibility": "visible",
+          "annotator_confidence": "certain",
+          "annotators": [
+            "ann-03",
+            "ann-07"
+          ],
+          "adjudicated": true,
+          "notes": "staged slip by actor-A4 on a mat"
+        }
+      ],
+      "hard_negatives": [
+        {
+          "id": "S-0003-H001",
+          "label": "customer_bending",
+          "start_s": 400.0,
+          "end_s": 403.0
         }
       ]
     }

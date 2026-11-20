@@ -12,14 +12,14 @@ function IncidentsInner() {
   return (
     <div className="two-pane" data-has-selection={id ? "true" : "false"}>
       <div className="pane pane-list">
-        <IncidentInbox selectedId={id} initialRoom={room} />
+        <IncidentInbox selectedId={id} room={room} />
       </div>
       <div className="pane pane-detail">
         {id ? (
           <IncidentDetail key={id} id={id} />
         ) : (
           <div className="pane-placeholder">
-            <p className="muted">Select an incident to review its evidence and timeline.</p>
+            <p className="muted">Select an incident to review its clip and timeline.</p>
           </div>
         )}
       </div>

@@ -40,7 +40,7 @@ def fmt_time(ts: float) -> str:
 
 # --------------------------------------------------------------------------- ground truth
 
-STRATA_KEYS = ("lighting", "occlusion", "camera_angle")
+STRATA_KEYS = ("lighting", "crowding", "camera_view")
 
 
 @dataclass
@@ -120,7 +120,7 @@ def load_ground_truth(data: dict | str | Path) -> GroundTruth:
     seen_ev: set[str] = set()
     seen_sess: set[str] = set()
     if data.get("dataset", {}).get("split") in ("test", "ood_test") and not data["dataset"].get("locked"):
-        warnings.append("dataset split is a test set but 'locked' is not true (SAFETY_VALIDATION §3.2)")
+        warnings.append("dataset split is a test set but 'locked' is not true")
     for s in data["sessions"]:
         sid = s["session_id"]
         if sid in seen_sess:
@@ -138,7 +138,7 @@ def load_ground_truth(data: dict | str | Path) -> GroundTruth:
             if ea < a or eb > b:
                 warnings.append(f"event {e['id']} extends outside session {sid} operating span")
             if len(e["annotators"]) < 2:
-                warnings.append(f"event {e['id']}: fewer than 2 independent annotators (SAFETY_VALIDATION §3.1)")
+                warnings.append(f"event {e['id']}: fewer than 2 independent annotators")
             if not e["adjudicated"]:
                 warnings.append(f"event {e['id']}: not adjudicated")
             cond = {**sess.conditions, **e.get("conditions", {})}
@@ -186,20 +186,26 @@ def load_incidents(path: str | Path) -> list[Incident]:
       state_change lines are ignored). The final version of each incident id
       wins; created_at is the incident's `end` on its incident_created line,
       i.e. the moment the rule confirmed it.
-    * core's API: a JSON array of Incident (GET /api/v1/incidents), a single
-      object with an "incidents" array, or JSON lines of Incident. created_at
-      is taken from the API field.
+    * core's API: a JSON array of Incident (GET /api/v1/incidents), an
+      object with an "incidents" array, a single Incident object (compact or
+      pretty-printed), or JSON lines of Incident. created_at is taken from
+      the API field.
     """
     text = Path(path).read_text()
-    stripped = text.lstrip()
     records: list[dict]
-    if stripped.startswith("["):
-        records = json.loads(stripped)
-    elif stripped.startswith("{") and "\n" not in stripped.strip():
-        one = json.loads(stripped)
-        records = one.get("incidents", [one]) if isinstance(one, dict) else one
-    else:
+    try:
+        # One JSON document: an array, {"incidents": [...]}, or a single
+        # (possibly pretty-printed) incident or replay line.
+        doc = json.loads(text)
+    except json.JSONDecodeError:
         records = [json.loads(l) for l in text.splitlines() if l.strip()]
+    else:
+        if isinstance(doc, list):
+            records = doc
+        elif isinstance(doc, dict):
+            records = doc["incidents"] if isinstance(doc.get("incidents"), list) else [doc]
+        else:
+            raise ValueError(f"{path}: expected incidents as JSON lines, a JSON array or a JSON object")
     created: dict[str, float] = {}
     final: dict[str, dict] = {}
     order: list[str] = []
@@ -303,28 +309,4 @@ def _merge(iv: list[tuple[float, float, str, str]]) -> list[tuple[float, float, 
             out[-1] = (out[-1][0], e, st, r)
         else:
             out.append((s, e, st, r))
-    return out
-
-
-# Camera-health faults (D1/D2) are not incidents in core; they are monitoring
-# states. To score them against injected faults, each non-operational state
-# interval becomes a pseudo-incident whose created_at is the interval start
-# (the moment core would show it).
-FAULT_TYPES = {
-    "CAMERA_UNAVAILABLE": "camera_offline",
-    ("VIDEO_DEGRADED", "black"): "camera_offline",
-    ("VIDEO_DEGRADED", "frozen"): "camera_offline",
-    ("VIDEO_DEGRADED", "obstructed"): "camera_obstructed",
-    ("VIDEO_DEGRADED", "view_changed"): "camera_obstructed",
-    ("VIDEO_DEGRADED", "blur"): "camera_obstructed",
-}
-
-
-def fault_incidents(tl: StateTimeline) -> list[Incident]:
-    out = []
-    for cam, iv in tl.intervals.items():
-        for s, e, st, reason in iv:
-            et = FAULT_TYPES.get(st) or FAULT_TYPES.get((st, reason))
-            if et:
-                out.append(Incident(f"STATE-{cam}-{len(out)}", et, s, e, s, [cam], "ALERTED", source="state"))
     return out

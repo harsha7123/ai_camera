@@ -1,16 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import { AckButton } from "@/components/AckButton";
+import { Icon } from "@/components/Icon";
 import { Badge, EmptyState, ErrorState, Loading, PageHeader, SeverityBadge, Skeleton } from "@/components/ui";
+import { api, errorMessage } from "@/lib/api";
 import { useApp } from "@/lib/store";
 import { LIFECYCLE_SHORT, STATUS_LABEL, eventLabel, formatTime, humanize, needsAck, sortIncidents } from "@/lib/present";
 import type { Incident, IncidentStatus } from "@/lib/types";
 
 type LifecycleFilter = "open" | "all" | "resolved";
 
-function Row({ i, selected, roomName }: { i: Incident; selected: boolean; roomName: (id: string) => string }) {
+/** Builds an /incidents/ URL, keeping the area filter so it survives selecting a row. */
+export function incidentsHref(id: string | null, room: string | null): string {
+  const q = new URLSearchParams();
+  if (room) q.set("room", room);
+  if (id) q.set("id", id);
+  const s = q.toString();
+  return `/incidents/${s ? `?${s}` : ""}`;
+}
+
+function Row({ i, selected, roomName, room }: { i: Incident; selected: boolean; roomName: (id: string) => string; room: string | null }) {
   return (
     <li
       className={`inbox-row${selected ? " is-selected" : ""}${needsAck(i) && i.status === "ALERTED" ? " is-urgent" : ""}`}
@@ -18,12 +30,13 @@ function Row({ i, selected, roomName }: { i: Incident; selected: boolean; roomNa
       data-incident={i.id}
       data-lifecycle={i.lifecycle}
     >
-      <Link href={`/incidents/?id=${encodeURIComponent(i.id)}`} className="inbox-link" aria-current={selected ? "true" : undefined}>
+      <Link href={incidentsHref(i.id, room)} className="inbox-link" aria-current={selected ? "true" : undefined}>
         <span className="inbox-top">
           <SeverityBadge incident={i} />
           <span className="tabular muted">{formatTime(i.start)}</span>
         </span>
         <span className="inbox-title">{eventLabel(i.event_type)}</span>
+        {i.pos_ref ? <span className="inbox-meta muted">POS ticket {i.pos_ref}</span> : null}
         <span className="inbox-meta muted">
           {roomName(i.room_id)} · {humanize(i.room_zone)}
         </span>
@@ -44,17 +57,56 @@ function Row({ i, selected, roomName }: { i: Incident; selected: boolean; roomNa
   );
 }
 
-export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string | null; initialRoom: string | null }) {
+interface PosSearch {
+  ref: string;
+  results: Incident[] | null;
+  error: string | null;
+}
+
+/**
+ * The area filter lives in the URL (`?room=`), so links from the overview and
+ * back/forward navigation always match what is shown.
+ */
+export function IncidentInbox({ selectedId, room: roomParam }: { selectedId: string | null; room: string | null }) {
+  const router = useRouter();
   const { incidents, incidentsError, refreshIncidents, overview, can, showShadow, setShowShadow } = useApp();
   const [lifecycle, setLifecycle] = useState<LifecycleFilter>("open");
   const [status, setStatus] = useState<IncidentStatus | "all">("all");
-  const [room, setRoom] = useState<string>(initialRoom ?? "all");
+  const room = roomParam ?? "all";
+  const setRoom = (r: string) => router.replace(incidentsHref(selectedId, r === "all" ? null : r));
+  const [posInput, setPosInput] = useState("");
+  const [pos, setPos] = useState<PosSearch | null>(null);
+  const posSeq = useRef(0);
 
   const roomName = (id: string) => overview?.rooms.find((r) => r.id === id)?.name ?? id;
   const rooms = useMemo(() => {
     const ids = new Set<string>([...(overview?.rooms.map((r) => r.id) ?? []), ...(incidents?.map((i) => i.room_id) ?? [])]);
+    if (roomParam) ids.add(roomParam);
     return [...ids];
-  }, [overview, incidents]);
+  }, [overview, incidents, roomParam]);
+
+  const searchPos = async (e: FormEvent) => {
+    e.preventDefault();
+    const ref = posInput.trim();
+    if (!ref) {
+      setPos(null);
+      return;
+    }
+    const seq = ++posSeq.current;
+    setPos({ ref, results: null, error: null });
+    try {
+      const shadowQ = can("view_shadow") && showShadow ? "&shadow=1" : "";
+      const results = await api.get<Incident[]>(`/api/v1/incidents?pos_ref=${encodeURIComponent(ref)}&limit=200${shadowQ}`);
+      if (seq === posSeq.current) setPos({ ref, results, error: null });
+    } catch (err) {
+      if (seq === posSeq.current) setPos({ ref, results: null, error: errorMessage(err) });
+    }
+  };
+  const clearPos = () => {
+    posSeq.current++;
+    setPos(null);
+    setPosInput("");
+  };
 
   const filtered = useMemo(() => {
     if (!incidents) return null;
@@ -69,6 +121,13 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
     );
   }, [incidents, lifecycle, status, room]);
 
+  // Search results come from the server; show the live copy of each when the store has it.
+  const posResults = useMemo(() => {
+    if (!pos?.results) return null;
+    const live = new Map((incidents ?? []).map((i) => [i.id, i]));
+    return sortIncidents(pos.results.map((r) => ({ ...r, ...(live.get(r.id) ?? {}) })));
+  }, [pos, incidents]);
+
   const pinned = filtered?.filter(needsAck) ?? [];
   const rest = filtered?.filter((i) => !needsAck(i)) ?? [];
   const statuses: IncidentStatus[] = ["ALERTED", "REVIEW_QUEUED", "INCONCLUSIVE", ...(can("view_shadow") && showShadow ? (["SHADOW"] as IncidentStatus[]) : [])];
@@ -77,8 +136,30 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
   return (
     <>
       <PageHeader title="Incidents">
-        <span className="muted">Automated observations for human review</span>
+        <span className="muted">AI flags, humans decide</span>
       </PageHeader>
+      <form className="filters pos-search" role="search" aria-label="Find incidents by POS ticket" onSubmit={(e) => void searchPos(e)}>
+        <label className="field field-inline">
+          <span>POS ticket</span>
+          <input
+            type="search"
+            value={posInput}
+            onChange={(e) => setPosInput(e.target.value)}
+            placeholder="e.g. T-1042"
+            autoCapitalize="characters"
+            spellCheck={false}
+            data-testid="pos-search-input"
+          />
+        </label>
+        <button type="submit" className="btn btn-secondary" data-testid="pos-search-submit">
+          <Icon name="search" size={18} /> Find
+        </button>
+        {pos ? (
+          <button type="button" className="btn btn-small" onClick={clearPos} data-testid="pos-search-clear">
+            Clear search
+          </button>
+        ) : null}
+      </form>
       <div className="filters" role="group" aria-label="Filter incidents">
         <label className="field field-inline">
           <span>Show</span>
@@ -100,9 +181,9 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
           </select>
         </label>
         <label className="field field-inline">
-          <span>Room</span>
+          <span>Area</span>
           <select value={room} onChange={(e) => setRoom(e.target.value)} data-testid="filter-room">
-            <option value="all">All rooms</option>
+            <option value="all">All areas</option>
             {rooms.map((r) => (
               <option key={r} value={r}>
                 {roomName(r)}
@@ -121,12 +202,33 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
               }}
               data-testid="toggle-shadow"
             />
-            <span>Include shadow-mode incidents (hidden from room staff)</span>
+            <span>Include shadow-mode incidents (rules still being tuned; nobody is alerted)</span>
           </label>
         ) : null}
       </div>
 
-      {incidentsError && !incidents ? (
+      {pos ? (
+        <section aria-labelledby="pos-h" className="inbox-section" data-testid="pos-results">
+          <h2 id="pos-h" className="inbox-heading">
+            POS ticket “{pos.ref}”{posResults ? ` · ${posResults.length} ${posResults.length === 1 ? "incident" : "incidents"}` : ""}
+          </h2>
+          {pos.error ? (
+            <ErrorState title="Search failed" message={pos.error} />
+          ) : !posResults ? (
+            <Loading label="Searching">
+              <Skeleton lines={2} />
+            </Loading>
+          ) : posResults.length === 0 ? (
+            <EmptyState title="No incidents for this ticket">Check the ticket number on the receipt or in the POS. Only POS-linked incidents carry a ticket.</EmptyState>
+          ) : (
+            <ul className="inbox">
+              {posResults.map((i) => (
+                <Row key={i.id} i={i} selected={i.id === selectedId} roomName={roomName} room={roomParam} />
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : incidentsError && !incidents ? (
         <ErrorState title="Incidents could not be loaded" message={`${incidentsError} New alerts may still arrive through live updates.`} onRetry={() => void refreshIncidents()} />
       ) : filtered === null ? (
         <Loading label="Loading incidents">
@@ -157,7 +259,7 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
             ) : null
           }
         >
-          {filtersActive ? "Try a wider filter, such as “All recent”." : "Nothing is waiting for acknowledgement or review. Check the Overview for the monitoring status of each room."}
+          {filtersActive ? "Try a wider filter, such as “All recent”." : "Nothing is waiting for acknowledgement or review. Check the Overview for the monitoring status of each area."}
         </EmptyState>
       ) : (
         <>
@@ -170,7 +272,7 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
               </h2>
               <ul className="inbox">
                 {pinned.map((i) => (
-                  <Row key={i.id} i={i} selected={i.id === selectedId} roomName={roomName} />
+                  <Row key={i.id} i={i} selected={i.id === selectedId} roomName={roomName} room={roomParam} />
                 ))}
               </ul>
             </section>
@@ -182,7 +284,7 @@ export function IncidentInbox({ selectedId, initialRoom }: { selectedId: string 
               </h2>
               <ul className="inbox">
                 {rest.map((i) => (
-                  <Row key={i.id} i={i} selected={i.id === selectedId} roomName={roomName} />
+                  <Row key={i.id} i={i} selected={i.id === selectedId} roomName={roomName} room={roomParam} />
                 ))}
               </ul>
             </section>

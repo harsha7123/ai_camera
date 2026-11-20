@@ -23,7 +23,7 @@ export function StateBadge({ state, large }: { state: DisplayState; large?: bool
   );
 }
 
-export function SeverityBadge({ incident }: { incident: Pick<Incident, "status" | "lifecycle" | "escalation_level"> }) {
+export function SeverityBadge({ incident }: { incident: Pick<Incident, "status" | "lifecycle" | "escalation_level"> & { event_type?: string } }) {
   const s = severity(incident);
   return (
     <Badge tone={s.tone} icon={s.icon} testId="severity-badge">

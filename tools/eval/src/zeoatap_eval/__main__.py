@@ -1,11 +1,11 @@
-"""zeoatap-eval: event-level safety evaluation.
+"""zeoatap-eval: event-level accuracy evaluation for the restaurant event types.
 
   zeoatap-eval evaluate --ground-truth gt.json --incidents replay.jsonl \
       [--observations obs.jsonl | --states states.jsonl] [--goals goals.json] \
       --out-md report.md --out-json report.json
   zeoatap-eval validate gt.json
   zeoatap-eval cvat-import --xml a.xml --annotator A [--xml b.xml --annotator B] --fps 15 \
-      --session-id S1 ... --out gt.json
+      --session-id S1 --lighting day --crowding rush --camera-view overhead ... --out gt.json
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import json
 import sys
 from pathlib import Path
 
-from .goals import load_goals
+from .goals import EVENT_TYPES, load_goals
 from .metrics import EvalConfig, evaluate
 from .model import load_ground_truth, load_incidents, states_from_jsonl, states_from_observations
 from .report import render_markdown
@@ -46,7 +46,7 @@ def cmd_evaluate(a) -> int:
         goals=load_goals(a.goals),
         latency_budget_override=a.latency_budget,
         pre_tolerance_s=a.pre_tolerance,
-        alert_statuses=tuple(a.alert_statuses.split(",")),
+        alert_statuses=tuple(x for x in a.alert_statuses.split(",") if x) if a.alert_statuses else None,
         decision_sided=a.decision_sided,
         count_duplicates_as_false_alerts=a.count_duplicates_as_false_alerts,
         release_types=a.release_types.split(",") if a.release_types else None,
@@ -79,7 +79,15 @@ def cmd_cvat_import(a) -> int:
     if len(a.xml) != len(a.annotator) or not 1 <= len(a.xml) <= 2:
         print("give one or two --xml, each with an --annotator", file=sys.stderr)
         return 2
-    labels = set(a.labels.split(",")) if a.labels else None
+    if a.labels == "all":
+        labels = None
+    else:
+        labels = set(a.labels.split(",")) if a.labels else set(EVENT_TYPES)
+        unknown = labels - set(EVENT_TYPES)
+        if unknown:
+            print(f"unknown event type label(s): {', '.join(sorted(unknown))}; known: {', '.join(EVENT_TYPES)}",
+                  file=sys.stderr)
+            return 2
     evs = [parse_cvat_video_xml(x, a.fps, labels) for x in a.xml]
     if len(evs) == 1:
         events = [{"id": f"{a.session_id}-{k + 1:03d}", "event_type": e.label,
@@ -102,11 +110,12 @@ def cmd_cvat_import(a) -> int:
         "session_id": a.session_id, "facility_id": a.facility_id, "camera_id": a.camera_id,
         **({"t0": a.t0} if a.t0 else {}),
         "recording": {"fps": a.fps, **({"source_file": a.source_file} if a.source_file else {})},
-        "conditions": {"lighting": a.lighting, "occlusion": a.occlusion, "camera_angle": a.camera_angle},
+        **({"room_id": a.room_id} if a.room_id else {}),
+        "conditions": {"lighting": a.lighting, "crowding": a.crowding, "camera_view": a.camera_view},
         "operating_span": {"start_s": 0, "end_s": span_end},
         "events": events,
     }
-    doc = {"schema_version": "1", "dataset": {"id": a.dataset_id, "split": a.split, "locked": False},
+    doc = {"schema_version": "2", "dataset": {"id": a.dataset_id, "split": a.split, "locked": False},
            "sessions": [session]}
     Path(a.out).write_text(json.dumps(doc, indent=2) + "\n")
     if queue:
@@ -129,16 +138,17 @@ def main(argv: list[str] | None = None) -> int:
     src = e.add_mutually_exclusive_group()
     src.add_argument("--observations", help="observations JSONL: rebuild FULLY_OPERATIONAL time like core does")
     src.add_argument("--states", help="state timeline JSONL {camera_id, state, at|since}")
-    e.add_argument("--goals", help="JSON overriding the default §5 goals per event type")
+    e.add_argument("--goals", help="JSON overriding the default pilot goals per event type")
     e.add_argument("--latency-budget", type=float, help="override every event type's matching budget (s)")
     e.add_argument("--pre-tolerance", type=float, default=1.0, help="seconds before GT.start (default 1)")
-    e.add_argument("--alert-statuses", default="ALERTED,SHADOW",
-                   help="incident statuses that count as alert severity (default ALERTED,SHADOW)")
+    e.add_argument("--alert-statuses",
+                   help="comma list of incident statuses whose unmatched incidents count as false alerts "
+                        "(default: every status except INCONCLUSIVE, i.e. ALERTED, SHADOW and REVIEW_QUEUED)")
     e.add_argument("--decision-sided", choices=["two", "one"], default="two",
                    help="bounds used for go/no-go: two-sided 95%% (default, conservative) or one-sided 95%%")
     e.add_argument("--count-duplicates-as-false-alerts", action="store_true")
     e.add_argument("--release-types", help="comma list of event types that must PASS for GO")
-    e.add_argument("--title", default="Safety evaluation report")
+    e.add_argument("--title", default="Event evaluation report")
     e.add_argument("--out-md")
     e.add_argument("--out-json")
     e.set_defaults(fn=cmd_evaluate)
@@ -151,16 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--xml", action="append", required=True)
     c.add_argument("--annotator", action="append", required=True)
     c.add_argument("--fps", type=float, required=True, help="video fps used in CVAT (frame -> seconds)")
-    c.add_argument("--labels", help="comma list of labels that are safety events (default all tracks)")
+    c.add_argument("--labels", help="comma list of event-type labels to import (default: every API.md event type; "
+                                    "'all' imports every track)")
     c.add_argument("--session-id", required=True)
     c.add_argument("--facility-id", required=True)
     c.add_argument("--camera-id", required=True)
     c.add_argument("--t0", help="RFC 3339 wall time of frame 0 (else fill it in later)")
     c.add_argument("--duration-s", type=float, help="annotated span (default: last event end)")
     c.add_argument("--source-file")
-    c.add_argument("--lighting", default="day")
-    c.add_argument("--occlusion", default="none")
-    c.add_argument("--camera-angle", default="high_oblique")
+    c.add_argument("--room-id")
+    c.add_argument("--lighting", required=True, choices=["day", "night", "after_hours_dark"])
+    c.add_argument("--crowding", required=True, choices=["empty", "normal", "rush"])
+    c.add_argument("--camera-view", required=True, choices=["overhead", "360", "wide"])
     c.add_argument("--dataset-id", default="unnamed")
     c.add_argument("--split", default="validation")
     c.add_argument("--out", required=True)

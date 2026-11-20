@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/alerts"
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
-	"github.com/saimouli3/zeoatap/services/core/internal/hub"
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
-	"github.com/saimouli3/zeoatap/services/core/internal/testutil/pgtest"
+	"github.com/harsha7123/ai_camera/services/core/internal/alerts"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/hub"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/testutil/pgtest"
 )
 
 func alertedIncident(t *testing.T, db *store.DB, key string) store.IncidentView {

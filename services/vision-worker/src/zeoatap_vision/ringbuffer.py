@@ -15,6 +15,7 @@ class BufferedPacket:
     wall_ts: float
     size: int
     keyframe: bool
+    gen: int = 0  # connection generation: packets from different connections never share timestamps
 
 
 class PacketRingBuffer:
@@ -26,8 +27,8 @@ class PacketRingBuffer:
         self._lock = threading.Lock()
         self.evicted_total = 0
 
-    def append(self, packet: Any, wall_ts: float) -> None:
-        item = BufferedPacket(packet, wall_ts, int(packet.size), bool(packet.is_keyframe))
+    def append(self, packet: Any, wall_ts: float, gen: int = 0) -> None:
+        item = BufferedPacket(packet, wall_ts, int(packet.size), bool(packet.is_keyframe), gen)
         with self._lock:
             self._items.append(item)
             self._bytes += item.size
@@ -39,10 +40,22 @@ class PacketRingBuffer:
                 self.evicted_total += 1
 
     def clear(self) -> None:
-        """Drop everything, e.g. after a reconnect when the codec may have changed."""
+        """Drop everything."""
         with self._lock:
             self._items.clear()
             self._bytes = 0
+
+    def span(self) -> tuple[float | None, float | None, int, int]:
+        """(oldest_ts, newest_ts, bytes, packets), read under one lock so the
+        values are consistent with each other."""
+        with self._lock:
+            if not self._items:
+                return None, None, self._bytes, 0
+            return self._items[0].wall_ts, self._items[-1].wall_ts, self._bytes, len(self._items)
+
+    def generations(self) -> set[int]:
+        with self._lock:
+            return {it.gen for it in self._items}
 
     @property
     def newest_ts(self) -> float | None:
@@ -56,10 +69,12 @@ class PacketRingBuffer:
 
     @property
     def bytes(self) -> int:
-        return self._bytes
+        with self._lock:
+            return self._bytes
 
     def __len__(self) -> int:
-        return len(self._items)
+        with self._lock:
+            return len(self._items)
 
     def snapshot(self, start: float, end: float) -> list[BufferedPacket]:
         """Packets covering [start, end], beginning at the last keyframe at or

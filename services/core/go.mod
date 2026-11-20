@@ -1,4 +1,4 @@
-module github.com/saimouli3/zeoatap/services/core
+module github.com/harsha7123/ai_camera/services/core
 
 go 1.24
 

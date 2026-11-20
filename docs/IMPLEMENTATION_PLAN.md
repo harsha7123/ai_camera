@@ -1,71 +1,61 @@
 # Implementation Plan
 
-**Date:** 2026-10-27 · Ordered tasks with dependencies, deliverables, acceptance criteria and effort (engineer-days, ed) [E].
+**Date:** 2026-11-20 · Phases match [FEATURE_ROADMAP](FEATURE_ROADMAP.md). Contract first: change [API.md](../packages/contracts/API.md) before code.
 
-## Repository structure (target)
+## Repository structure
 ```
-apps/web/                     Next.js dashboard                (not yet created)
-services/core/                Go: event engine, incidents, API (slice exists: eventengine + replay CLI)
-services/vision-worker/       Python: ingest, inference         (only benchmark/ exists: GPU latency harness)
-packages/contracts/           Observation / incident schemas    (exists: JSON Schema)
-infra/                        compose, systemd, migrations      (exists: initial SQL migration)
-tests/fixtures/               synthetic observation streams     (exists: MOCK data)
-docs/                         this documentation
+packages/contracts/        API.md (v2) + observation.schema.json (v2)
+services/core/             Go: event engine, POS rules, analytics, access log, API/SSE, alerts, evidence, audit
+services/vision-worker/    Python: RTSP ingest, detector (YOLOX-m Human-Art), ByteTrack, quality, ring buffer, clip API
+apps/web/                  Next.js dashboard (static export served by core)
+tools/eval/                Event-level evaluation (Clopper–Pearson, Poisson, INSUFFICIENT_DATA)
+tools/soak/                Multi-camera soak test
+docs/                      This documentation
 ```
-Services are created only when their phase starts. No empty placeholders.
 
-## Phase 0 (feasibility)
-| # | Task | Depends | Deliverable | Acceptance | ed |
-|---|---|---|---|---|---|
-| 0.1 | Counsel engagement for pilot jurisdiction | — | Legal memo | Answers OQ-L2, L6, L7, L8 | 10 (external) |
-| 0.2 | Licensing review of shipped components | 0.1 | Signed LICENSING_REGISTER | Every P0 component ✅ or replaced | 5 |
-| 0.3 | ACLab + ICVD licensing enquiries | — | Responses | Decision recorded | 2 |
-| 0.4 | Partner facility + site survey | — | Survey report, camera inventory | Hazard zones visible on ≥1 camera each | 5 |
-| 0.5 | Event taxonomy sign-off | — | Approved definitions | Safety lead + domain expert sign | 3 |
-| 0.6 | Manikin protocol + consent forms | 0.1 | Protocol doc | Ethics/safety advisor approval | 5 |
-| 0.7 | Dev GPU procurement (approval) | — | Workstation | CUDA/TensorRT smoke test | 2 |
+## Done (restaurant pivot, 2026-11)
+| Area | Done |
+|---|---|
+| Contract | API v2: restaurant event taxonomy, roles, POS endpoint, traffic, access log |
+| Engine | Nine rules; staff inference; business hours; count_line counting; access log; SHADOW + `alerting_enabled` |
+| Worker | `priority` (15 fps) / normal (5 fps) sampling; `role: "person"` only; infant stack removed |
+| Docs | Requirements, architecture, validation plan, privacy, ADR-009/010 |
+| Test counts | See the top-level README (filled in by the lead) |
 
-## Phase 1 (video infrastructure)
-| # | Task | Depends | Deliverable | Acceptance | ed |
-|---|---|---|---|---|---|
-| 1.1 | Observation contract v1 (protobuf + JSON Schema) | — | `packages/contracts` | Contract tests pass | 2 (**started**) |
-| 1.2 | RTSP simulator from files (MediaMTX/GStreamer) | — | `infra/sim` | Streams 16 files in loop | 2 (**partly done**: live tests run MediaMTX + ffmpeg synthetic cameras; a standalone multi-file looping simulator is not built yet) |
-| 1.3 | vision-worker ingest + reconnect + health | 1.1, 1.2 | Python service | Fault tests for disconnect/freeze pass | 8 (**done** for one camera over real RTSP: reconnect, black/obstructed/frozen checks, 5/15 fps sampling, `/healthz` `/readyz` `/metrics`. Frozen detection is unit-tested only) |
-| 1.4 | Ring buffer + clip cutting (remux, no transcode) | 1.3 | Clip API | Clip hash stable. Pre-event 30 s available | 5 (**done**: remuxed H.264 clips decode cleanly; clips cut by an outage are marked partial. Not yet encrypted at rest) |
-| 1.5 | core: health aggregation + monitoring states | 1.1 | Go package | Unit tests: green only when fresh | 4 (**done** in the engine and replay; tested end to end with live vision-worker output. No long-running core service yet) |
-| 1.6 | Postgres schema + migrations | — | `infra/migrations` | Migrate up/down in CI | 2 (**started**) |
-| 1.7 | Prometheus metrics + Grafana dashboards | 1.3, 1.5 | Dashboards | All metrics in OBSERVABILITY list present | 3 |
-| 1.8 | Minimal web: login + health page | 1.5 | `apps/web` | US-01, US-10 pass | 8 |
-| 1.9 | GPU benchmark harness | 0.7 | Benchmark report | t_det, t_pose measured for 3 candidates | 5 (**done** on a cloud GPU, see [BENCHMARK_RESULTS](BENCHMARK_RESULTS.md). Re-run on the edge SKU) |
-| 1.10 | 72 h soak | all | Soak report | 0 crashes, faults visible | 3 |
+## Phase 1 tasks (pilot, days 0–30)
+| # | Task | Acceptance |
+|---|---|---|
+| 1.1 | Install checklist: VLANs, camera authorization records, notices, acknowledgments | Signed checklist per site |
+| 1.2 | Zone setup guide (incl. fisheye and `floor` zones) | Every enabled rule has a visible zone on the install snapshot |
+| 1.3 | Staged on-site test script (tamper, after-close entries, falls on mats, no-customer refunds) | Results imported into tools/eval |
+| 1.4 | Shadow-period dashboard stats per rule (count, dispositions, FA rate vs. budget) | Owner can read enable criteria in-app |
+| 1.5 | TLS termination recipe + MFA for owner/admin | Security checklist items closed |
 
-## Phase 2 (detection pipeline)
-| # | Task | Depends | Acceptance | ed |
-|---|---|---|---|---|
-| 2.1 | CVAT self-hosted + annotation schema | 0.6 | Schema per SAFETY_VALIDATION §3 | 3 |
-| 2.2 | Data collection (manikin + consented) | 0.6, 2.1 | ≥5k labelled frames, session-split | 20 |
-| 2.3 | Detector fine-tune (infant class, IR) + TRT export | 2.2, 1.9 | Val AP reported per stratum | 10 |
-| 2.4 | ByteTrack integration + `held` state | 2.3 | ID-switch rate measured | 5 |
-| 2.5 | Pose fine-tune + pose-quality score | 2.2 | PCK per stratum. Quality calibrated | 10 |
-| 2.6 | Zone editor (web) + zone config in core | 1.8 | US-06 passes | 6 |
-| 2.7 | Rules D3, D4, A1, C1 in event engine | 1.5 | Unit + replay tests | 6 (**slice started**) |
-| 2.8 | Incident inbox + review screen + dispositions | 2.7 | US-02..04 | 10 |
-| 2.9 | Offline benchmark harness (event-level metrics) | 2.7 | Report with CIs | 5 |
+## Phase 2 tasks (days 30–60)
+| # | Task | Acceptance |
+|---|---|---|
+| 2.1 | POS connector for the pilot's POS | Replays a day of POS data; dedupe and resend-from-`line` tested; no card fields |
+| 2.2 | POS feed health + clock-skew monitor | Silent feed during open hours shown on overview |
+| 2.3 | Time-clock import; B1/B2 report | Minutes listed both ways; no face matching |
+| 2.4 | Conversion (A3) and daily flash | Scheduled at 7 am site time |
+| 2.5 | Weekly payroll reconciliation | Reviewed by owner before payroll |
 
-## Phases 3–6
-See FEATURE_ROADMAP. Tasks are broken down at each phase start.
-
-## Done since the plan was written (2026-10-31)
-Core service (API, auth/RBAC, SSE, alerts + escalation, encrypted clips + retention, audit chain, Postgres store; 1.5, 1.6), vision-worker live link to core and clip API (1.3, 1.4), AI pipeline wiring with YOLOX + tracker + RTMPose + FiDIP (2.3–2.5 *integration only, no fine-tuning*), dashboard (1.8, 2.6 partial: zones edited as JSON, 2.8), event-level eval harness (2.9), multi-camera soak (1.10, CPU only, 60 s runs).
+## Phase 3 tasks (days 60–90)
+| # | Task | Acceptance |
+|---|---|---|
+| 3.1 | Push/SMS relay behind the webhook | No media in payload; delivery failures in `alerts_health` |
+| 3.2 | P2 rules in SHADOW (A5, B8, C7, C8, H3) | Tests + shadow stats |
+| 3.3 | Metadata plane + multi-site dashboard | Outbound-only; no video |
+| 3.4 | TensorRT FP16 + batching in worker | Benchmark re-run on edge SKU |
 
 ## Next ten tasks (priority order)
-1. Engage counsel for the pilot jurisdiction (0.1)
-2. Recruit partner facility + site survey; test against a **real IP camera** (0.4)
-3. Record and annotate manikin test video; run `tools/eval` for the first real accuracy numbers (Phase 2 gate)
-4. Fine-tune detector (infant class, IR) and infant pose on rights-cleared data (2.2–2.5)
-5. Re-run the GPU benchmark and the soak on the chosen edge GPU (L4), end to end incl. NVDEC decode (1.9, 1.10)
-6. Decide session policy for wall tablets (status polling currently keeps sessions alive) and add MFA + login rate limiting
-7. Buffer incidents locally while the database is down; retry failed clip captures
-8. Profile vision-worker at 32+ cameras (single analysis thread looks like the limit) and split analysis per GPU/process
-9. Visual zone editor on calibration snapshots (replace JSON editing)
-10. Cloud control plane: device enrolment, signed model/rule releases (needed before any rule may alert, ADR-008)
+1. POS connector for the pilot POS (2.1).
+2. Shadow statistics per rule in the dashboard (1.4).
+3. TLS termination + MFA (1.5).
+4. Floor-zone guidance and a startup warning when `person_down` runs on a camera without a `floor` zone.
+5. POS feed health + clock skew (2.2).
+6. Install checklist and notice templates for counsel (1.1).
+7. On-site staged test script → tools/eval (1.3).
+8. Daily flash (2.4).
+9. Push/SMS relay (3.1).
+10. Fire/smoke data collection plan and licence review (Phase 5).

@@ -1,10 +1,14 @@
-"""Event-level matching (SAFETY_VALIDATION §4).
+"""Event-level matching.
 
 An incident is *eligible* for a ground-truth event when
   * it has the same event_type,
   * it is in scope for the event's session (shares a camera with it), and
   * their time intervals overlap, or the incident start falls within
-    [GT.start - pre_tolerance, GT.end + latency_budget].
+    [GT.start - pre_tolerance, GT.end + latency_budget], and
+  * the incident was not created before GT.start - pre_tolerance. An
+    incident that existed before the event began cannot have detected it
+    (a negative latency points at clock misalignment or an unrelated,
+    earlier incident); such pairs are rejected and listed by the report.
 
 Each GT event matches at most one incident and vice versa. The assignment
 is solved with the Hungarian algorithm (scipy linear_sum_assignment) on
@@ -37,12 +41,22 @@ def temporal_iou(a0: float, a1: float, b0: float, b1: float) -> float:
     return inter / union
 
 
-def eligible(gt: GTEvent, inc: Incident, latency_budget: float, pre_tolerance: float = 1.0) -> bool:
+def window_ok(gt: GTEvent, inc: Incident, latency_budget: float, pre_tolerance: float = 1.0) -> bool:
+    """Same type and close enough in time, ignoring when it was created."""
     if gt.event_type != inc.event_type:
         return False
     overlap = inc.start <= gt.end and inc.end >= gt.start
     in_window = gt.start - pre_tolerance <= inc.start <= gt.end + latency_budget
     return overlap or in_window
+
+
+def created_too_early(gt: GTEvent, inc: Incident, pre_tolerance: float = 1.0) -> bool:
+    """Latency below -pre_tolerance: the incident predates the event."""
+    return inc.created_at < gt.start - pre_tolerance
+
+
+def eligible(gt: GTEvent, inc: Incident, latency_budget: float, pre_tolerance: float = 1.0) -> bool:
+    return window_ok(gt, inc, latency_budget, pre_tolerance) and not created_too_early(gt, inc, pre_tolerance)
 
 
 @dataclass
@@ -93,14 +107,22 @@ def assign(gts: list[GTEvent], incs: list[Incident], budget_for, pre_tolerance: 
     return res
 
 
-def in_scope(sess: Session, inc: Incident) -> bool:
+def in_scope(sess: Session, inc: Incident, budget_for=None, pre_tolerance: float = 1.0) -> bool:
     """An incident belongs to a session if it shares a camera with it and
-    starts within the session's operating span."""
+    starts within the session's operating span. With budget_for, an incident
+    that starts after the span ends also belongs to it when it falls within
+    the latency budget of one of the session's events (an event near the end
+    of the span is confirmed after the span closes); other incidents after
+    the span stay out of scope."""
     if inc.cameras and not set(inc.cameras) & set(sess.camera_ids):
         return False
     if not inc.cameras and sess.room_id and inc.room_id and inc.room_id != sess.room_id:
         return False
-    return sess.span_start <= inc.start <= sess.span_end
+    if sess.span_start <= inc.start <= sess.span_end:
+        return True
+    if budget_for is None or inc.start < sess.span_start:
+        return False
+    return any(eligible(g, inc, budget_for(g.event_type), pre_tolerance) for g in sess.events)
 
 
 def match_all(sessions: list[Session], incidents: list[Incident], budget_for,
@@ -110,7 +132,7 @@ def match_all(sessions: list[Session], incidents: list[Incident], budget_for,
     total = MatchResult()
     claimed: set[str] = set()
     for sess in sessions:
-        incs = [i for i in incidents if i.id not in claimed and in_scope(sess, i)]
+        incs = [i for i in incidents if i.id not in claimed and in_scope(sess, i, budget_for, pre_tolerance)]
         claimed.update(i.id for i in incs)
         r = assign(sess.events, incs, budget_for, pre_tolerance)
         total.pairs += r.pairs

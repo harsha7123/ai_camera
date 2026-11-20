@@ -1,266 +1,117 @@
 # AI Model Strategy
 
-**Date:** 2026-10-27 · **Status:** Design. No model has been trained or validated yet.
-Related: [RESEARCH_REPORT](RESEARCH_REPORT.md) · [SAFETY_VALIDATION](SAFETY_VALIDATION.md)
+**Date:** 2026-11-20 · **Status:** Rules implemented and unit-tested on synthetic observations. **No rule or model has been validated on restaurant footage.** Thresholds are engineering starting points to be tuned in shadow mode.
+Related: [API.md](../packages/contracts/API.md) · [SAFETY_VALIDATION](SAFETY_VALIDATION.md) · [LICENSING_REGISTER](LICENSING_REGISTER.md) · [RESEARCH_REPORT](RESEARCH_REPORT.md)
 
 ---
 
 ## 1. Principles
 
-1. **Smallest model set that produces a measurable safety-review benefit.** Start with deterministic rules over detection, tracking, pose and zones. Add learned classifiers only when an experiment shows they reduce misses or false alerts.
-2. **Detectors observe, the event engine decides** (ADR-002). No safety logic hides in a model or prompt.
-3. **Every observation carries quality.** Low quality yields *inconclusive*, never "safe".
-4. **Per-event thresholds,** with no single "risk score". Scores are not calibrated probabilities of harm unless calibrated on in-domain labelled incidents.
-5. **Licensing-safe stack only in product** (ADR-004).
+1. **Detectors observe, rules decide** (ADR-002). Models emit anonymous person tracks; every decision is an explicit, versioned rule in core (`rule_version` on each incident).
+2. **No identity from video** (ADR-003). The worker sends `role: "person"`. "Staff" is a core inference from *where* a track is, never *who* it is. POS/time-clock IDs are the only identity source.
+3. **Lost sight ⇒ INCONCLUSIVE, never "all clear".**
+4. **Per-rule thresholds and per-rule opt-in alerting** (ADR-008). No global risk score.
+5. **Licensing-safe stack** (ADR-004): no AGPL (Ultralytics, BoxMOT), no non-commercial weights in product.
+6. **An incident is a prompt to review, not a finding.**
 
 ---
 
-## 2. Event taxonomy and feasibility
+## 2. Event taxonomy (identical to API.md)
 
-Feasibility combines technical observability on ordinary CCTV, data availability and validation difficulty [E].
-
-| ID | Event | Family | Observable on CCTV? | Data obtainable ethically? | Feasibility | Initial product mode |
-|---|---|---|---|---|---|---|
-| D1 | Camera offline / frozen / black | D | ✅ Deterministic | ✅ Synthetic faults | **High** | **Alert (ops)** — MVP |
-| D2 | Camera obstructed / view changed | D | ✅ | ✅ Staged | **High** | **Alert (ops)** — MVP |
-| D3 | Person in restricted zone (e.g. kitchen door, exit) | D | ✅ Adult detection is mature | ✅ Staged adults | **High** | Alert after shadow validation |
-| D4 | Infant in restricted/floor-hazard zone | D | ⚠️ Infant detection must be fine-tuned | ✅ Manikin + consented | **Medium** | Review → alert after validation |
-| D5 | No adult present in room with infant(s) for > T | D | ⚠️ Requires full room coverage. Blind spots break it | ✅ Staged | **Medium** (coverage-dependent) | Review signal. Never presented as a staffing-compliance tool |
-| D6 | Crowding near crib (> N adults within zone) | D | ✅ | ✅ | Medium | Review |
-| A1 | **Infant left raised surface unexpectedly** (crib/changing table → floor) | A | ⚠️ Depends on camera angle showing surface and floor | ✅ Manikin drops (no real infants) | **Medium** | Shadow → alert if validated |
-| A2 | Abrupt downward movement of an infant | A | ⚠️ Fall ≈0.35–0.45 s; needs ≥15 fps | ✅ Manikin | Medium–Low | Review |
-| A3 | Unusual posture transition (e.g. sudden prone after standing) | A | ⚠️ Pose quality limited | ⚠️ | Low–Medium | Research |
-| B1 | Abrupt/forceful handling of an infant by an adult | B | ❌/⚠️ Very hard to separate from rocking, bouncing, swift lifts. Small pixel size | ⚠️ Only manikin/staged proxies. Real positives are rare and ethically sensitive | **Low** | **Review-only research signal. Never an accusation** |
-| B2 | Repetitive shaking-like motion | B | ❌/⚠️ Needs high fps + resolution. Indistinguishable from soothing bounce without context | ⚠️ Manikin only | **Low** | Research only |
-| B3 | Throwing/dragging-like motion | B | ⚠️ | ⚠️ Manikin | Low | Research only |
-| C1 | No visible movement of an infant for > T while *not* in a sleep zone/period | C | ⚠️ Blankets, occlusion | ✅ | Low–Medium | Low-priority review. **Not a medical alarm** |
-| C2 | Infant body visibility lost (covered/obstructed) for > T in crib | C | ⚠️ Can't tell a blanket over the face from a blanket over the legs reliably | ✅ Manikin + blankets | Low–Medium | Review |
-| C3 | Sudden change in movement pattern vs. baseline | C | ⚠️ | ⚠️ | Low | Research |
-| E1 | Visual respiration estimate | E | ❌ for wide-angle daycare CCTV (no evidence). Research on close-up baby monitors only | ❌ Research-only data (AIR-400 NC) | **Research only** | **Not a product feature.** Regulatory review required |
-
-**Things ordinary CCTV cannot tell you [E]:** intent, force magnitude, injury, pain, breathing adequacy, whether a child is asleep or unwell, or who a person is (without biometrics, which we exclude). The product must say so in the UI and documentation.
-
----
-
-## 3. Pipeline (per camera)
-
-```
-frame (5 fps base, ≥15 fps on raised-surface cameras)
-  → quality module (black/frozen/blur/IR/obstruction)            [classical CV]
-  → detector: {adult, infant, crib, changing_table, ...}         [YOLOX/RT-DETR, fine-tuned]
-  → ByteTrack (per camera)                                        [MIT]
-  → pose on infant & adult crops (RTMPose-s/m) + pose_quality     [Apache-2.0, fine-tuned]
-  → features: zone membership, bbox bottom vs surface polygon, vertical velocity,
-              posture state {lying, sitting, standing, held, unknown}
-  → Observation → core event engine (rules per event type)
-  → [P1] PoseC3D skeleton classifier on candidate windows (2–4 s)
-  → [P2] X3D RGB verifier on candidate windows
-  → [P2] VLM summary of evidence clip (advisory, post-incident)
-```
-
-### 3.1 Why "held" matters
-Many false alerts come from caregivers carrying infants. The detector + tracker must output an **infant-held** state (infant bbox overlapping an adult bbox with an elevated centroid). Zone rules (A1, D4) are suppressed while the infant is held, and handling rules (B1) apply only while held. This one state removes whole classes of confusions [H, test in Phase 2].
-
----
-
-## 4. Baselines and model choices
-
-| Stage | Baseline (P0) | Upgrade path | Fine-tuning data |
-|---|---|---|---|
-| Detector | YOLOX-S/M or RT-DETR-R18 (Apache-2.0) | RF-DETR | Manikin + consented infant frames; IR frames; crib-bar occlusion |
-| Tracker | ByteTrack | BoT-SORT without CMC | none |
-| Pose | RTMPose-s/m via rtmlib (ONNX/TRT) | RTMO for crowded rooms; ViTPose for offline labelling | Infant keypoints (own data). FiDIP used as research comparison only |
-| Posture state | Rules on keypoint geometry + small MLP | Learned temporal classifier | Labelled posture segments |
-| Window classifier | none in P0 | PoseC3D (MMAction2 → ONNX) | Candidate windows labelled normal-care vs. concerning |
-| RGB verifier | none | X3D-S | Same windows |
-| VLM | none | Qwen3-VL-4B/8B (Apache-2.0) | Prompt + schema; no training |
-
----
-
-## 5. Physics and sampling constraints
-
-Free-fall time from height *h*: *t = √(2h/g)* [E]
-
-| Surface height | Fall time | Frames at 5 fps | Frames at 15 fps | Frames at 25 fps |
+| event_type | family | Playbook use case | Trigger | Default policy |
 |---|---|---|---|---|
-| 0.6 m (crib mattress, low) | 0.35 s | ~1–2 | ~5 | ~9 |
-| 0.9 m (changing table) | 0.43 s | ~2 | ~6 | ~11 |
+| `after_hours_intrusion` | G | G1 | A person is detected outside the staff window (business hours, plus the pre-open and post-close allowances) | alert |
+| `camera_tamper` | G | G3 | The camera is VIDEO_DEGRADED (black, obstructed or frozen) or CAMERA_UNAVAILABLE for 30 s or more | alert |
+| `restricted_zone_entry` | D | D5 / G4 | A person not recognised as staff is in a `restricted` or `secure` zone for 3 s or more | review |
+| `person_down` | F | F6 | A person's box stays lying-down shaped (real width/height ≥ 1.3, using `frame_size`) in a `floor` zone for 3 s or more. Only cameras with a `floor` zone are evaluated; overhead and 360° cameras must not have one | alert |
+| `long_queue` | A | A4 | `max_people` (default 5) or more people in a `queue` zone for 60 s or more, during business hours | alert |
+| `long_wait` | A | A4 | One person stays in a `queue` zone for 8 min or more | review |
+| `unattended_post` | B | B4 | A `post` zone (register, host stand, counter) has nobody in it for 3 min or more, during business hours | alert |
+| `pos_no_sale` | C | C1 | The POS reports a `no_sale` drawer open | review |
+| `pos_refund_no_customer` | C | C3 | A POS `void`, `refund` or `comp` happens while nobody was in the register's `customer_side` zone between 20 s before and 5 s after it | alert |
 
-**Implication:** motion-signature fall detection needs ≥15 fps. **But the robust approach is state-change detection**: "infant was on surface S at t₀" and "infant is on floor/below S at t₁ ≤ t₀+2 s, not held". This works at 5 fps and is our primary A1 logic. Motion signatures (A2) are secondary evidence.
-
----
-
-## 6. Confidence handling
-
-Each observation carries `det_score`, `track_age`, `track_confidence`, `pose_quality` (mean keypoint confidence over visible joints and visible-joint count), `visibility` (fraction of infant bbox not occluded, estimated) and `camera_quality`.
-
-Rules consume these as **gates**, not by multiplying them into one score:
-
-```
-evidence_ok = det_score ≥ τ_det[event] ∧ track_age ≥ k_frames ∧ pose_quality ≥ τ_pose[event] ∧ camera_quality = OK
-```
-
-If `evidence_ok` fails while a candidate is open, the window ends as **INCONCLUSIVE** (review item, low priority), not as "no event".
-
-Calibration: in Phase 2, every learned classifier's scores are calibrated (temperature scaling / isotonic) on the validation split and reported with reliability diagrams. Calibration on manikin data **does not** transfer to real infants, so this must be repeated on shadow-mode data.
+Alert-policy rules start as **SHADOW**; `alerting_enabled: true` per rule in the site config turns real alerts on (audited at startup). Non-incident outputs: the **secure-zone access log** and **traffic counts** (§3.3).
 
 ---
 
-## 7. Temporal decision engine
+## 3. Rule logic and thresholds
 
-### 7.1 States per (camera, track, event type)
+### 3.1 Track/zone rules
+| Rule | Subjects | Logic | Thresholds (site-overridable) | Evidence gates |
+|---|---|---|---|---|
+| `after_hours_intrusion` | Any track (staff or not) | Track present while the clock is outside [open − `staff_before_open`, close + `staff_after_close`] in the site TZ | Schedule per weekday; Harbor Grill 90 min / 90 min | Camera FULLY_OPERATIONAL |
+| `restricted_zone_entry` | Tracks **not** inferred staff | Position in a `restricted` or `secure` zone ≥ 3 s | 3 s | Camera healthy; staff tracks excluded |
+| `person_down` | Any track | Real box w/h ≥ 1.3 (normalized box × `frame_size` aspect) continuously ≥ 3 s, box centre inside a `floor` zone. Cameras without a floor zone are never evaluated | 1.3, 3 s | Box confidence ≥ 0.4; healthy camera |
+| `long_queue` | Tracks in `queue` zone | Count ≥ `max_people` continuously ≥ 60 s during business hours | 5 people, 60 s | Healthy camera |
+| `long_wait` | One track in `queue` | Same track ID in zone ≥ `min_duration_s` | 480 s | Track continuity (see §5: ID switches) |
+| `unattended_post` | Tracks in `post` zone | Zone empty ≥ `min_duration_s` during business hours | 180 s | Healthy camera (an unhealthy camera never produces "empty") |
 
-```mermaid
-stateDiagram-v2
-  [*] --> OBSERVING
-  OBSERVING --> CANDIDATE: trigger predicate true (per event type)
-  CANDIDATE --> OBSERVING: predicate false before min_duration (discard, log)
-  CANDIDATE --> CONFIRMING: persisted ≥ min_duration AND evidence_ok
-  CANDIDATE --> INCONCLUSIVE: evidence_ok false (visibility/quality lost)
-  CONFIRMING --> INCONCLUSIVE: independent check disagrees AND policy=review
-  CONFIRMING --> INCIDENT: checks pass (optional second model, multi-cam agreement)
-  INCIDENT --> ALERTED: severity policy = alert
-  INCIDENT --> REVIEW_QUEUED: severity policy = review
-  ALERTED --> ACKNOWLEDGED: staff ack within T_ack
-  ALERTED --> ESCALATED: no ack within T_ack
-  ESCALATED --> ACKNOWLEDGED
-  ACKNOWLEDGED --> RESOLVED: reviewer disposition
-  REVIEW_QUEUED --> RESOLVED
-  INCONCLUSIVE --> RESOLVED
-  RESOLVED --> [*]
-```
+### 3.2 POS rules
+| Rule | Input | Logic | Notes |
+|---|---|---|---|
+| `pos_no_sale` | POSEvent `type=no_sale` | One incident per event; clip from the register's camera | Review policy: no-sales are often legitimate (making change) |
+| `pos_refund_no_customer` | `void`, `refund`, `comp` | Look back 20 s and forward 5 s in the register's `customer_side` zone; if nobody, incident with `pos_ref` = `ticket_ref` | Needs POS clock within a few seconds of the edge clock ([ADR-010](architecture/adr/ADR-010-pos-integration.md)); the rule can decide only once observations up to +5 s exist |
 
-### 7.2 Actions
+POS events are deduped by `id`; events for unknown registers are ignored. `employee_ref` is stored for matching only.
 
-| Situation | Action |
-|---|---|
-| Nothing notable | Continue observing at base fps |
-| Trigger predicate true | Open CANDIDATE, **increase sampling** to burst fps, pin ring-buffer segments |
-| Candidate persists | Analyze the temporal window (2–4 s) with the window classifier, if enabled |
-| Weak/conflicting evidence | **Low-priority review event** |
-| Confirmed + event policy = alert | **Notify staff immediately** (local first) |
-| Alert not acknowledged in `T_ack` (e.g. 60 s) | **Escalate** to the next role/channel |
-| Same room-zone + family + overlapping window | **Suppress duplicate** and merge evidence |
-| Visibility lost during candidate | Mark **INCONCLUSIVE** |
-
-### 7.3 Pseudocode (implemented in `services/core/internal/eventengine`)
-
-```text
-for obs in observations (ordered by capture_ts per camera):
-    cam = cameras[obs.camera_id]
-    cam.health.update(obs)                       # heartbeat, quality, drops
-    if cam.health.state != OK:
-        emit MonitoringState(cam, state)         # dashboard: not monitored / degraded
-        close_all_candidates(cam, reason=VISIBILITY_LOST) → INCONCLUSIVE
-        continue
-
-    for rule in rules_for(cam):                  # each rule has its own thresholds
-        for subject in rule.subjects(obs):        # e.g. infant tracks
-            key = (cam.id, subject.track_id, rule.event_type)
-            st  = state[key] or OBSERVING
-            trig = rule.trigger(subject, cam.zones, history[key])
-            ok   = rule.evidence_ok(subject, obs.quality)
-
-            switch st:
-              OBSERVING:
-                if trig and ok: st = CANDIDATE(start=obs.ts); request_burst(cam)
-              CANDIDATE:
-                if not ok: finalize(key, INCONCLUSIVE)
-                elif not trig and obs.ts - start < rule.min_duration: st = OBSERVING
-                elif obs.ts - start ≥ rule.min_duration: st = CONFIRMING
-              CONFIRMING:
-                verdict = rule.independent_checks(window)   # optional 2nd model, other cams
-                if verdict == DISAGREE and rule.on_disagree == REVIEW: finalize(key, INCONCLUSIVE)
-                else: create_or_merge_incident(key, window)
-
-create_or_merge_incident(key, window):
-    room_zone = topology.room_zone(key.cam, window.zone)
-    existing  = open_incident(room_zone, rule.family, overlaps=window ± rule.merge_gap)
-    if existing: existing.add_evidence(key.cam, window); return
-    idem = sha256(tenant, room_zone, event_type, floor(window.start / rule.bucket))
-    inc  = incidents.insert_if_absent(idem, ...)     # idempotent
-    clips.request(inc, pre=policy.pre_s, post=policy.post_s)
-    if rule.policy == ALERT and rule.validated_for_alerting: alerts.dispatch(inc)
-    else: review_queue.add(inc)
-```
-
-**Critical property:** `rule.validated_for_alerting` defaults to **false** for every learned-model rule and can only be set by a signed model/rule release that references a passed validation report (SAFETY_VALIDATION §7).
-
-### 7.4 Example rule configurations (illustrative engineering starting points)
-
-| Rule | Trigger | min_duration | Gates | Merge gap | Policy (pilot) |
-|---|---|---|---|---|---|
-| D1 camera_offline | no packets | 3 s | — | 60 s | ops alert |
-| D3 adult_in_restricted_zone | adult bbox foot-point in zone | 2 s | det≥0.5, track_age≥3 | 30 s | review → alert after validation |
-| A1 infant_off_surface | infant was in surface S ≤2 s ago, now foot/centroid below S polygon, not held | 0.5 s | det≥0.4, visibility≥0.5 | 10 s | **shadow** |
-| C1 no_visible_movement | keypoint motion energy < ε | 600 s, configurable, outside sleep zones/times | pose_quality≥0.5 | 300 s | low-priority review |
-| D5 no_adult_present | infants>0 ∧ adults=0 in room (all room cameras OK) | 60 s | **all** room cameras OK, else INCONCLUSIVE | 120 s | review |
-
-These numbers are **not validated**. They are placeholders for Phase 2 tuning.
+### 3.3 Inference and aggregates
+| Output | Logic | Known limits |
+|---|---|---|
+| **Staff inference** | `staff` if the track is on a `staff_only` camera, or has dwelt in a `staff_area` zone (threshold in core defaults) | Customers who step behind the counter become "staff" for that track; staff who never enter a staff_area on that camera stay "person" (§5) |
+| **Access log** | Each visit (enter → leave) of a tracked person to a `secure` zone: camera, zone, role, start/end, `after_hours` | A track split by an ID switch becomes two visits |
+| **Traffic** | `count_line` crossing direction → entry/exit; `peak_occupancy` = most people at once on that camera, per 15-min bucket | Crossings, not unique visitors; groups crossing together under-count when boxes merge |
 
 ---
 
-## 8. Infant posture-transition modelling (adapted idea from InfAct)
+## 4. Known failure modes
 
-Represent infant behaviour as a sequence of **stable posture states** separated by **transitions** (an idea from InfAct, re-implemented independently). Safety-relevant transitions:
-- `on_surface → below_surface` (A1)
-- `standing_in_crib → rail_height` (climbing risk, review)
-- `lying → covered/not visible` (C2)
-
-This gives explainable evidence ("posture went from *sitting on changing table* to *lying on floor* in 0.6 s") rather than an opaque score.
-
----
-
-## 9. Contextual AI (VLM)
-
-**Role:** after an incident exists, summarize the evidence clip for the reviewer. **It never creates, upgrades or closes incidents.**
-
-| Requirement | Design |
-|---|---|
-| Model | Qwen3-VL-4B or 8B Instruct (Apache-2.0), local via vLLM, AWQ/FP8 quantized. VRAM and latency **to be measured** |
-| Input | 8–16 frames sampled from the clip, with timestamps overlaid as text tokens, plus the detector's track boxes and event type |
-| Output | JSON schema (below), enforced with constrained decoding (vLLM guided JSON) |
-| Guardrails | Banned vocabulary in outputs (abuse, assault, intent, injured, "hit"), automatically rejected and regenerated. Must cite frame indices for every claim. Output "cannot determine" when not visible |
-| Evaluation | Phase 4 A/B test: reviewer time-to-disposition and disposition accuracy with vs. without the summary. **Ship only if it helps** |
-| Cloud | **Not by default.** A cloud VLM requires explicit facility opt-in, a DPA, zero-retention terms, de-identification (blurring non-subject people) and per-clip consent logging |
-
-```json
-{
-  "observed_evidence": [{"frame_index": 4, "t_offset_s": 1.2, "description": "adult lifts infant from changing table"}],
-  "time_interval_s": [0.0, 6.0],
-  "candidate_event_category": "infant_off_surface | adult_in_zone | handling_review | none_observed | cannot_determine",
-  "uncertainty": "low | medium | high",
-  "visibility_limitations": ["infant partially occluded by adult from 2.0s to 3.5s"],
-  "reason_for_human_review": "Detector reported infant below surface; frames show adult holding infant throughout.",
-  "prohibited_inferences_acknowledged": true
-}
-```
+| Failure mode | Affects | Effect | Mitigation |
+|---|---|---|---|
+| **Track ID switches** (occlusion, crowd) | long_wait, access log, staff inference, counting | Wait timer resets (miss); a staff track becomes a new "person" (false `restricted_zone_entry`); double-counted crossings | ByteTrack tuning; staff inference sticky per zone; tune min durations in shadow |
+| **Occlusion at busy counters** | pos_refund_no_customer, long_queue, unattended_post | Customer hidden behind another → "no customer" false positive; staff hidden → false "empty post" | Overhead register camera; customer_side zone sized generously; review policy until tuned |
+| **360° fisheye distortion** | person_down, counting, zone membership | Upright people near the edge of a fisheye image appear wide/rotated → **box-aspect fall heuristic fires falsely**; boxes are poor fits | Dewarp or limit `floor` zones to the centre of fisheye images; prefer fixed cameras for counting |
+| **Box-aspect fall heuristic** | person_down | **False positives:** someone crouching, kneeling to clean, sitting on the floor, children playing, a person lying on a booth bench, bending into a low fridge; overhead views (a top-down box carries no "lying" information). **False negatives:** a fall partly hidden by tables, a fallen person seen end-on | Draw `floor` zones on every camera (otherwise the rule applies to the whole image, e.g. the register overhead); keep SHADOW until tuned; pose-based check (RTMPose) is the planned upgrade |
+| **Staff inference errors** | restricted_zone_entry, access log role | Delivery drivers, new hires, managers who don't stand behind the counter are "person"; a customer who reaches over the counter may become "staff" | Treat role as a hint; review policy; never used against a named person |
+| **Lighting / night IR** | All | Missed detections after close (after-hours intrusion when lights are off) | Test with lights off in pilot; IR stratum in validation |
+| **POS clock skew** | pos_refund_no_customer | Window misaligned → false "no customer" | NTP on POS/edge; skew check (roadmap) |
+| **Reflections, screens, posters of people** | Detection | Phantom persons (after-hours false alerts) | Exclusion masks; shadow tuning |
 
 ---
 
-## 10. Training strategy (summary; see SAFETY_VALIDATION for splits)
+## 5. Model stack
 
-1. **Phase 2a:** fine-tune the detector (infant class, IR) on manikin + consented data (~5–10k labelled frames [E]).
-2. **Phase 2b:** fine-tune pose on infant keypoints (~2–5k frames [E]), with pose-quality calibration.
-3. **Phase 3:** collect candidate windows from shadow mode (normal care = abundant negatives). Positives from manikin protocol. Train PoseC3D on hard negatives (lift, rock, bounce, feed, change).
-4. **Active learning:** shadow-mode false positives and reviewer dispositions go into the annotation queue (only with training consent).
-5. **Dataset versioning:** DVC or lakeFS-style immutable snapshots with a manifest (consent IDs, source, license, split). Every model release references a snapshot ID.
+| Stage | In use | Licence (code / weights) | Notes |
+|---|---|---|---|
+| Person detector | **YOLOX-m Human-Art** (`yolox-m-humanart`, 640², ONNX); YOLOX-tiny Human-Art as a fast option | Apache-2.0 / COCO + Human-Art terms ⚠️ (open) | Pretrained public weights; not fine-tuned on restaurant CCTV |
+| Tracker | **ByteTrack** | MIT | Per camera |
+| Pose (optional) | **RTMPose-m/s Body7** via rtmlib | Apache-2.0 / Body7 mix ⚠️ (open) | Not used by any current rule; planned for a pose-based `person_down` and hand-to-pocket research |
+| Runtime | ONNX Runtime (CPU/CUDA); TensorRT FP16 measured in the benchmark but **not yet used by the worker** | MIT / NVIDIA proprietary | See [BENCHMARK_RESULTS](BENCHMARK_RESULTS.md) |
 
----
-
-## 11. Version management and rollback
-
-- Model release = `{model_id, semver, onnx_sha256, trt_build_env, dataset_snapshot, validation_report_id, allowed_rules[]}`, signed by release key.
-- The edge keeps N=2 previous releases. Rollback is one command and is also triggered automatically when post-deploy canary metrics breach thresholds (e.g. alert rate > 3× the trailing 7-day median for the facility).
-- Every incident stores `model_versions` and `rules_version` for audit.
+Removed with the pivot: FiDIP, the infant/adult role classifier, held-state logic, InfAct-style posture modelling and breathing research.
 
 ---
 
-## 12. Fallback models
+## 6. Roadmap models
 
-| Failure | Fallback |
-|---|---|
-| Pose model fails / low quality | Rules that need pose → INCONCLUSIVE. Zone rules continue on bbox only |
-| Detector fails | Camera → AI_UNAVAILABLE. Health monitoring continues |
-| GPU unavailable | CPU ONNX: health + adult zone presence at 1–2 fps; everything else disabled and labelled |
-| VLM unavailable | No summary. The incident is unaffected |
+| Capability | Playbook | Approach (candidate) | Main risk | Licensing caveat |
+|---|---|---|---|---|
+| Fire / smoke | F7 | Fine-tuned detector on fire/smoke frames + temporal persistence; kitchen-specific negatives (steam, flambé, grill smoke) | Steam and cooking smoke are normal in kitchens → high FP | Many public fire/smoke checkpoints are Ultralytics-trained (**AGPL-3.0**); dataset terms vary — verify each |
+| Weapon visible | F5 | Detector class for handgun/knife + persistence; kitchen knives excluded by zone | Kitchen knives, phones, tongs; rare positives | Same Ultralytics/AGPL caveat; staged-data rights |
+| PPE / hairnet / gloves | B9 | Detector on kitchen crops (head covering, gloves) | Small objects; glove colour vs. skin | Check dataset terms; employee-relations review |
+| Hand-to-pocket / cash handling | C5, C9 | Pose (wrist keypoints) near pocket + cash-zone context on 15 fps overhead | Very high FP; accusatory potential | Body7 weights terms ⚠️ |
+| Object carry (bags/boxes) | D1 | Detector classes for bag/box at back door + direction | Trash runs and deliveries are normal | COCO has bag classes but no "box"; new labels needed |
+| Fights / confrontation | F1–F4 | Skeleton action model (e.g. PoseC3D-style) on candidate windows | Busy-service motion; no audio by policy | Pretrained action weights trained on research-only data ❌ |
+| Plates / pours | A8, D2, D4 | Counting at pass/bar | Occlusion, clutter | New labelled data |
+| Natural-language search | H4 | VLM/embedding index over incidents, later clips (ADR-007) | Hallucination; privacy of an index | Apache-2.0 VLMs only (e.g. Qwen3-VL) |
+
+**Every roadmap model ships in SHADOW and needs its own validation per [SAFETY_VALIDATION](SAFETY_VALIDATION.md).** Weights must be trained or fine-tuned on data we hold rights to before sale (OQ-L3).
+
+---
+
+## 7. Decision engine states
+
+Per (camera, track or zone, event type): `OBSERVING → CANDIDATE → INCIDENT`, with `CANDIDATE → OBSERVING` if the condition clears before its duration, and `CANDIDATE → INCONCLUSIVE` if the camera goes unhealthy. Incidents then become `ALERTED` (alert policy, enabled), `SHADOW` (alert policy, not enabled) or `REVIEW_QUEUED`; lifecycle `new → acknowledged → resolved`. See [diagram 09](architecture/diagrams/09-decision-engine-states.md).
+
+## 8. Versioning
+
+Each incident stores `rule_version` and `model_versions`. A change to a rule's logic or default threshold bumps its version, so shadow statistics are never pooled across versions.

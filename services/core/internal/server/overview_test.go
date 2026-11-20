@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/eventengine"
+	"github.com/harsha7123/ai_camera/services/core/internal/eventengine"
 )
 
 func getOverview(t *testing.T, e *env, c *http.Client) overviewResp {

@@ -1,11 +1,14 @@
-# ADR-002: Detectors observe, rules decide, alerter delivers
-**Status:** Accepted · **Date:** 2026-10-27
+# ADR-002: Detectors observe, rules decide, the alerter delivers, humans decide
+**Status:** Accepted · **Date:** 2026-10-27, revised 2026-11-20
 
 ## Decision
-Models emit `Observation`s (timestamps, tracks, scores, quality, model versions). The Go event engine applies explicit, versioned, per-event rules. The alert dispatcher handles delivery, acknowledgement and escalation. No safety decision lives inside a model or prompt.
+- vision-worker emits `Observation`s: anonymous person tracks (`role: "person"`), boxes, quality, model versions. It makes no business decision and no staff/customer judgement.
+- core's event engine applies explicit, versioned rules (`rule_version`) over tracks, zones, health, schedule and POS events.
+- The alert dispatcher delivers (SSE, webhook), retries and escalates.
+- **A manager decides**, using the clip. Incidents are review prompts, never findings about a person.
 
 ## Why
-Testability (deterministic replay), auditability (which rule version decided), safe model swaps, and per-event validation gating (`validated_for_alerting`).
+Deterministic replay and tests; auditability of which rule decided; model swaps without logic changes; per-rule opt-in alerting (ADR-008); a clear line for employment-law purposes between "the system flagged" and "a person decided".
 
 ## Consequences
-Needs a stable contract (`packages/contracts`). The rules need tuning work, but that work is visible and reviewable.
+Contract-first ([API.md](../../../packages/contracts/API.md), observation schema). Staff inference, business hours and POS correlation live in core, not in the model.

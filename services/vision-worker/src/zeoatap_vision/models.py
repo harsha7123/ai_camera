@@ -1,4 +1,4 @@
-"""Registry of the pretrained models the pose pipeline can load.
+"""Registry of the pretrained models the person pipeline can load.
 
 Every entry is pinned by URL and sha256 (of the downloaded archive AND of the
 extracted ONNX file). scripts/fetch_models.py downloads and verifies them into
@@ -6,14 +6,13 @@ services/vision-worker/models/ (git-ignored); the pipeline re-verifies the
 ONNX sha256 before loading, so a swapped file never runs silently.
 
 All weights are public pretrained weights (COCO / Human-Art / Body7). They
-are NOT trained or validated on infants or on CCTV footage. See MODELS.md for
-licenses; the project owner clears them before product use.
+are NOT trained or validated on restaurant CCTV footage. See MODELS.md for
+licenses; they must be cleared before product use.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,8 +27,8 @@ class ModelSpec:
     name: str
     kind: str  # "detector" | "pose"
     archive: str  # file name under OPENMMLAB / HF_MIRROR
-    archive_sha256: str  # downloaded archive / checkpoint
-    onnx_sha256: str | None  # None: exported locally, verified against models/manifest.json
+    archive_sha256: str  # downloaded archive
+    onnx_sha256: str  # the extracted end2end.onnx
     input_size: tuple[int, int]  # (w, h)
     version: str  # what goes into observation.model_versions
 
@@ -59,19 +58,10 @@ MODELS: dict[str, ModelSpec] = {m.name: m for m in [
               "7673922e531014906ca4f0f239b7e233b740146a10b632deaa2a28d45470d802",
               "9aeb635b83f86aea45cf45d85798f7eba1a162de8e0d721c44e54fe5eebaf47d",
               (192, 256), "rtmpose-s-body7-256x192-acd4a1ef"),
-    # FiDIP infant pose (used at the owner's direction; non-commercial code license, see MODELS.md).
-    # Exported to ONNX by scripts/export_fidip.py; "archive" is the PyTorch checkpoint.
-    ModelSpec("fidip-mobile", "infant_pose", "mobile_fidip.pth",
-              "bd0b7548b1f1158f0a8a97d022305547343c835e7d4027727a978d2d7a4cbca1", None,
-              (224, 224), "fidip-posemobilenet-224-bd0b7548"),
-    ModelSpec("fidip-hrnet-w48", "infant_pose", "hrnet_fidip.pth",
-              "bfbf9df225674614652d5dbdd066daf71c9b9d7f3c31976b7ed33bb96af55d07", None,
-              (288, 384), "fidip-hrnet-w48-384x288-bfbf9df2"),
 ]}
 
 DEFAULT_DETECTOR = "yolox-m-humanart"
-DEFAULT_POSE = "rtmpose-m-body7"
-DEFAULT_INFANT_POSE = "fidip-mobile"
+DEFAULT_POSE = "rtmpose-m-body7"  # only with --detector pose
 
 
 def default_model_dir() -> Path:
@@ -97,19 +87,8 @@ def resolve(name: str, model_dir: str | Path | None = None, verify: bool = True)
     path = Path(model_dir or default_model_dir()) / spec.filename
     if not path.exists():
         raise ModelMissing(f"{path} not found; run scripts/fetch_models.py")
-    if verify:
-        expected = spec.onnx_sha256
-        if expected is None:  # locally exported: trust only the hash the exporter recorded
-            mf = path.parent / "manifest.json"
-            try:
-                entry = json.loads(mf.read_text()).get(name, {})
-            except (OSError, ValueError):
-                entry = {}
-            if entry.get("checkpoint_sha256") != spec.archive_sha256 or not entry.get("onnx_sha256"):
-                raise ModelMissing(f"{name}: no verified export recorded in {mf}; run scripts/export_fidip.py")
-            expected = entry["onnx_sha256"]
-        if sha256_file(path) != expected:
-            raise ModelMissing(f"{path}: sha256 mismatch (expected {expected[:12]}…); re-fetch / re-export it")
+    if verify and sha256_file(path) != spec.onnx_sha256:
+        raise ModelMissing(f"{path}: sha256 mismatch (expected {spec.onnx_sha256[:12]}…); re-fetch it")
     return path
 
 

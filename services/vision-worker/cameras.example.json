@@ -1,16 +1,34 @@
 {
   "cameras": [
     {
-      "id": "cam1",
-      "url": "rtsp://192.168.10.21:554/stream2",
-      "credentials_env": "CAM1_RTSP_CREDS",
-      "protected": false
+      "id": "cam-entrance",
+      "url": "rtsp://192.168.20.21:554/stream2",
+      "credentials_env": "CAM_ENTRANCE_RTSP_CREDS",
+      "priority": false
     },
     {
-      "id": "cam2-changing-table",
-      "url": "rtsp://192.168.10.22:554/stream2",
-      "credentials_env": "CAM2_RTSP_CREDS",
-      "protected": true
+      "id": "cam-counter",
+      "url": "rtsp://192.168.20.22:554/stream2",
+      "credentials_env": "CAM_COUNTER_RTSP_CREDS",
+      "priority": true
+    },
+    {
+      "id": "cam-dining",
+      "url": "rtsp://192.168.20.23:554/stream2",
+      "credentials_env": "CAM_DINING_RTSP_CREDS",
+      "priority": false
+    },
+    {
+      "id": "cam-kitchen",
+      "url": "rtsp://192.168.20.24:554/stream2",
+      "credentials_env": "CAM_KITCHEN_RTSP_CREDS",
+      "priority": false
+    },
+    {
+      "id": "cam-back",
+      "url": "rtsp://192.168.20.25:554/stream2",
+      "credentials_env": "CAM_BACK_RTSP_CREDS",
+      "priority": false
     }
   ]
 }

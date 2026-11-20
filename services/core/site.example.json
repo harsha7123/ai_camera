@@ -1,42 +1,422 @@
 {
-  "facility": {"id": "f1", "name": "Sunflower Nursery"},
+  "facility": {
+    "id": "harbor-grill",
+    "name": "Harbor Grill"
+  },
+  "business_hours": {
+    "timezone": "America/New_York",
+    "weekly": {
+      "mon": [
+        [
+          "11:00",
+          "22:00"
+        ]
+      ],
+      "tue": [
+        [
+          "11:00",
+          "22:00"
+        ]
+      ],
+      "wed": [
+        [
+          "11:00",
+          "22:00"
+        ]
+      ],
+      "thu": [
+        [
+          "11:00",
+          "22:00"
+        ]
+      ],
+      "fri": [
+        [
+          "11:00",
+          "23:30"
+        ]
+      ],
+      "sat": [
+        [
+          "10:00",
+          "23:30"
+        ]
+      ],
+      "sun": [
+        [
+          "10:00",
+          "21:00"
+        ]
+      ]
+    },
+    "staff_before_open": "90m",
+    "staff_after_close": "90m"
+  },
   "rooms": [
-    {"id": "infants-a", "name": "Infants A"},
-    {"id": "toddlers", "name": "Toddlers"}
+    {
+      "id": "entrance",
+      "name": "Entrance"
+    },
+    {
+      "id": "counter",
+      "name": "Front counter"
+    },
+    {
+      "id": "dining",
+      "name": "Dining room"
+    },
+    {
+      "id": "kitchen",
+      "name": "Kitchen"
+    },
+    {
+      "id": "back",
+      "name": "Back of house"
+    }
+  ],
+  "registers": [
+    {
+      "id": "reg1",
+      "name": "Register 1",
+      "camera_id": "cam-counter",
+      "customer_zone": "reg1-front",
+      "room_zone": "register-1"
+    }
   ],
   "cameras": [
     {
-      "id": "cam1",
-      "room_id": "infants-a",
-      "name": "Changing table",
-      "protected": true,
-      "authorized_by": "Facility director",
+      "id": "cam-entrance",
+      "room_id": "entrance",
+      "name": "Front door (people count)",
+      "priority": false,
+      "authorized_by": "Owner",
       "authorized_at": "2026-10-01",
-      "authorization_scope": "Infant room A, opening hours; changing table and kitchen door only",
-      "enabled": true,
+      "authorization_scope": "Front door, counting visitors; after-hours security",
       "zones": [
-        {"id": "table", "room_zone": "changing-table-1", "kind": "surface",
-         "polygon": [{"X": 0.1, "Y": 0.3}, {"X": 0.4, "Y": 0.3}, {"X": 0.4, "Y": 0.5}, {"X": 0.1, "Y": 0.5}]},
-        {"id": "door", "room_zone": "kitchen-door", "kind": "restricted",
-         "polygon": [{"X": 0.8, "Y": 0.5}, {"X": 1.0, "Y": 0.5}, {"X": 1.0, "Y": 1.0}, {"X": 0.8, "Y": 1.0}]}
+        {
+          "id": "door-line",
+          "room_zone": "front-door",
+          "kind": "count_line",
+          "polygon": [
+            {
+              "X": 0.2,
+              "Y": 0.7
+            },
+            {
+              "X": 0.8,
+              "Y": 0.7
+            }
+          ]
+        }
       ]
     },
     {
-      "id": "cam2",
-      "room_id": "infants-a",
-      "name": "Room overview",
-      "protected": false,
-      "authorized_by": "Facility director",
+      "id": "cam-counter",
+      "room_id": "counter",
+      "name": "Register 1 overhead",
+      "priority": true,
+      "authorized_by": "Owner",
       "authorized_at": "2026-10-01",
-      "authorization_scope": "Infant room A, opening hours",
+      "authorization_scope": "Register 1 and the queue in front of it; video only, no audio",
       "zones": [
-        {"id": "door-b", "room_zone": "kitchen-door", "kind": "restricted",
-         "polygon": [{"X": 0.0, "Y": 0.4}, {"X": 0.3, "Y": 0.4}, {"X": 0.3, "Y": 1.0}, {"X": 0.0, "Y": 1.0}]}
+        {
+          "id": "reg1-staff",
+          "room_zone": "register-1",
+          "kind": "post",
+          "polygon": [
+            {
+              "X": 0.3,
+              "Y": 0.0
+            },
+            {
+              "X": 0.7,
+              "Y": 0.0
+            },
+            {
+              "X": 0.7,
+              "Y": 0.35
+            },
+            {
+              "X": 0.3,
+              "Y": 0.35
+            }
+          ]
+        },
+        {
+          "id": "behind-counter",
+          "room_zone": "behind-counter",
+          "kind": "staff_area",
+          "polygon": [
+            {
+              "X": 0.0,
+              "Y": 0.0
+            },
+            {
+              "X": 1.0,
+              "Y": 0.0
+            },
+            {
+              "X": 1.0,
+              "Y": 0.4
+            },
+            {
+              "X": 0.0,
+              "Y": 0.4
+            }
+          ]
+        },
+        {
+          "id": "reg1-front",
+          "room_zone": "register-1-front",
+          "kind": "customer_side",
+          "polygon": [
+            {
+              "X": 0.25,
+              "Y": 0.45
+            },
+            {
+              "X": 0.75,
+              "Y": 0.45
+            },
+            {
+              "X": 0.75,
+              "Y": 0.7
+            },
+            {
+              "X": 0.25,
+              "Y": 0.7
+            }
+          ]
+        },
+        {
+          "id": "queue",
+          "room_zone": "counter-queue",
+          "kind": "queue",
+          "polygon": [
+            {
+              "X": 0.2,
+              "Y": 0.45
+            },
+            {
+              "X": 0.8,
+              "Y": 0.45
+            },
+            {
+              "X": 0.8,
+              "Y": 1.0
+            },
+            {
+              "X": 0.2,
+              "Y": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cam-dining",
+      "room_id": "dining",
+      "name": "Dining room 360",
+      "priority": false,
+      "authorized_by": "Owner",
+      "authorized_at": "2026-10-01",
+      "authorization_scope": "Dining room floor; slip and fall, after-hours security",
+      "zones": [
+        {
+          "id": "floor",
+          "room_zone": "dining-floor",
+          "kind": "floor",
+          "polygon": [
+            {
+              "X": 0.0,
+              "Y": 0.3
+            },
+            {
+              "X": 1.0,
+              "Y": 0.3
+            },
+            {
+              "X": 1.0,
+              "Y": 1.0
+            },
+            {
+              "X": 0.0,
+              "Y": 1.0
+            }
+          ]
+        },
+        {
+          "id": "office-door",
+          "room_zone": "office",
+          "kind": "restricted",
+          "polygon": [
+            {
+              "X": 0.85,
+              "Y": 0.2
+            },
+            {
+              "X": 1.0,
+              "Y": 0.2
+            },
+            {
+              "X": 1.0,
+              "Y": 0.6
+            },
+            {
+              "X": 0.85,
+              "Y": 0.6
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cam-kitchen",
+      "room_id": "kitchen",
+      "name": "Kitchen wide",
+      "priority": false,
+      "staff_only": true,
+      "authorized_by": "Owner",
+      "authorized_at": "2026-10-01",
+      "authorization_scope": "Kitchen line and walk-in cooler door; staff notified in handbook",
+      "zones": [
+        {
+          "id": "cooler-door",
+          "room_zone": "walk-in-cooler",
+          "kind": "secure",
+          "polygon": [
+            {
+              "X": 0.75,
+              "Y": 0.2
+            },
+            {
+              "X": 0.95,
+              "Y": 0.2
+            },
+            {
+              "X": 0.95,
+              "Y": 0.7
+            },
+            {
+              "X": 0.75,
+              "Y": 0.7
+            }
+          ]
+        },
+        {
+          "id": "kitchen-floor",
+          "room_zone": "kitchen-floor",
+          "kind": "floor",
+          "polygon": [
+            {
+              "X": 0.0,
+              "Y": 0.4
+            },
+            {
+              "X": 0.75,
+              "Y": 0.4
+            },
+            {
+              "X": 0.75,
+              "Y": 1.0
+            },
+            {
+              "X": 0.0,
+              "Y": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cam-back",
+      "room_id": "back",
+      "name": "Back door and safe",
+      "priority": false,
+      "staff_only": true,
+      "authorized_by": "Owner",
+      "authorized_at": "2026-10-01",
+      "authorization_scope": "Back door, delivery dock and office safe",
+      "zones": [
+        {
+          "id": "back-door",
+          "room_zone": "back-door",
+          "kind": "secure",
+          "polygon": [
+            {
+              "X": 0.0,
+              "Y": 0.2
+            },
+            {
+              "X": 0.25,
+              "Y": 0.2
+            },
+            {
+              "X": 0.25,
+              "Y": 0.9
+            },
+            {
+              "X": 0.0,
+              "Y": 0.9
+            }
+          ]
+        },
+        {
+          "id": "safe",
+          "room_zone": "safe",
+          "kind": "secure",
+          "polygon": [
+            {
+              "X": 0.7,
+              "Y": 0.3
+            },
+            {
+              "X": 0.9,
+              "Y": 0.3
+            },
+            {
+              "X": 0.9,
+              "Y": 0.6
+            },
+            {
+              "X": 0.7,
+              "Y": 0.6
+            }
+          ]
+        }
       ]
     }
   ],
   "rules": {
-    "infant_off_surface": {"policy": "alert"},
-    "adult_in_restricted_zone": {"policy": "review"}
+    "after_hours_intrusion": {
+      "policy": "alert"
+    },
+    "camera_tamper": {
+      "policy": "alert"
+    },
+    "long_queue": {
+      "policy": "alert",
+      "max_people": 5
+    },
+    "unattended_post": {
+      "policy": "alert",
+      "min_duration_s": 180
+    },
+    "person_down": {
+      "policy": "alert"
+    },
+    "pos_refund_no_customer": {
+      "policy": "alert"
+    },
+    "restricted_zone_entry": {
+      "policy": "review"
+    },
+    "long_wait": {
+      "policy": "review",
+      "min_duration_s": 480
+    },
+    "pos_no_sale": {
+      "policy": "review"
+    }
   }
 }

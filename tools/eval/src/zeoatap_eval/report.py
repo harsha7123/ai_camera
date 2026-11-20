@@ -17,13 +17,13 @@ def _ci(ci, nd=3):
     return "–" if not ci else f"[{_f(ci['lower'], nd)}, {_f(ci['upper'], nd)}]"
 
 
-def render_markdown(r: dict, title: str = "Safety evaluation report") -> str:
+def render_markdown(r: dict, title: str = "Event evaluation report") -> str:
     s, cfg, gng = r["summary"], r["config"], r["go_no_go"]
     out = [f"# {title}", ""]
     out.append(f"**Decision: {gng['decision']}**" + (" (MOCK detector input: not a real evaluation)"
                                                      if s["mock_incidents"] else ""))
     out.append("")
-    out.append("All metrics are event-level (SAFETY_VALIDATION §4). Intervals are exact 95% "
+    out.append("All metrics are event-level. Intervals are exact 95% "
                "Clopper–Pearson (proportions) or exact Poisson (rates). Goals are the pre-registered "
                "goals in use; meeting them on this data is not a claim about real-world performance "
                "unless the data is the locked test set.")
@@ -42,7 +42,8 @@ def render_markdown(r: dict, title: str = "Safety evaluation report") -> str:
             f"| Matching | same type; overlap, or incident start in [GT.start − {cfg['pre_tolerance_s']} s, GT.end + budget]; "
             f"one-to-one, Hungarian on temporal IoU |",
             f"| Latency budgets (s) | {', '.join(f'{k}={v:g}' for k, v in cfg['latency_budget_s'].items())} |",
-            f"| Alert-severity statuses (for false alerts) | {', '.join(cfg['alert_statuses'])} |",
+            f"| Statuses counted as false alerts when unmatched | "
+            f"{', '.join(cfg['alert_statuses']) if cfg['alert_statuses'] is not None else 'all except INCONCLUSIVE'} |",
             f"| Decision bounds | {cfg['decision_sided']}-sided {cfg['confidence']:.0%} |", ""]
 
     out += ["## Per event type", "",
@@ -63,7 +64,8 @@ def render_markdown(r: dict, title: str = "Safety evaluation report") -> str:
             "INCONCLUSIVE incident covered the event (counted separately, not as detection). Duplicates are "
             "extra incidents on an already-matched event: they lower precision but are not false alerts"
             + (" (here they ARE counted as false alerts)" if cfg["count_duplicates_as_false_alerts"] else "")
-            + ". FA/cam-h counts unmatched alert-severity incidents per FULLY_OPERATIONAL camera-hour.", ""]
+            + ". FA/cam-h counts unmatched conclusive incidents (alerts, SHADOW alerts and review prompts unless "
+            "--alert-statuses narrows it) per FULLY_OPERATIONAL camera-hour.", ""]
 
     out += ["## Confusion (GT type → outcome)", "", "| GT type | Outcomes |", "|---|---|"]
     for et, m in r["per_event_type"].items():
@@ -84,7 +86,7 @@ def render_markdown(r: dict, title: str = "Safety evaluation report") -> str:
                            f"{_f(st['false_alerts_per_camera_hour'], 4)} |")
         out.append("")
 
-    out += ["## Go / no-go (SAFETY_VALIDATION §7)", "", f"**{gng['decision']}** for release types: "
+    out += ["## Go / no-go", "", f"**{gng['decision']}** for release types: "
             + (", ".join(gng["release_types"]) or "(none)"), ""]
     if gng["blockers"]:
         out += ["Blockers:", ""] + [f"- {b}" for b in gng["blockers"]] + [""]
@@ -106,6 +108,13 @@ def render_markdown(r: dict, title: str = "Safety evaluation report") -> str:
         out += ["## False positives", "", "| Incident | Type | Status | Start | On hard negative |", "|---|---|---|---|---|"]
         out += [f"| {x['incident_id']} | {x['event_type']} | {x['status']} | {x['start']} | {x['hard_negative'] or ''} |"
                 for x in r["false_positives"]] + [""]
+    if r.get("rejected_negative_latency"):
+        out += ["## Rejected: created before the event started", "",
+                "Same-type incidents in the matching window that were created more than the pre-tolerance before "
+                "GT.start. They are not matched (they cannot have detected the event) and count as false positives.",
+                "", "| Incident | GT id | Type | Latency (s) |", "|---|---|---|---|"]
+        out += [f"| {x['incident_id']} | {x['gt_id']} | {x['event_type']} | {x['latency_s']} |"
+                for x in r["rejected_negative_latency"]] + [""]
     if r["warnings"]:
         out += ["## Warnings", ""] + [f"- {w}" for w in r["warnings"]] + [""]
     return "\n".join(out)

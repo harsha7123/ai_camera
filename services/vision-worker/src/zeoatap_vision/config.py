@@ -5,11 +5,14 @@ holds "user:password", and URLs are redacted everywhere they are printed."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,16 +20,17 @@ class CameraConfig:
     id: str
     url: str
     credentials_env: str | None = None
-    # Raised-surface cameras are protected: never sampled below 15 fps (AI_MODEL_STRATEGY §5).
-    protected: bool = False
+    # Priority cameras (register/POS overheads) are never sampled below 15 fps;
+    # everything else runs at 5 fps.
+    priority: bool = False
     base_fps: float = 5.0
-    protected_fps: float = 15.0
+    priority_fps: float = 15.0
     ring_seconds: float = 120.0
     ring_max_bytes: int = 64 * 1024 * 1024
 
     @property
     def target_fps(self) -> float:
-        return max(self.base_fps, self.protected_fps) if self.protected else self.base_fps
+        return max(self.base_fps, self.priority_fps) if self.priority else self.base_fps
 
     def resolved_url(self) -> str:
         """URL with credentials injected from the environment. Never log this."""
@@ -37,10 +41,10 @@ class CameraConfig:
             raise ValueError(f"camera {self.id}: env {self.credentials_env} must hold 'user:password'")
         user, password = creds.split(":", 1)
         parts = urlsplit(self.url)
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{host}"
+        # Keep the host part verbatim (minus any userinfo): parts.hostname would
+        # strip the brackets of an IPv6 literal such as [fe80::1].
+        hostport = parts.netloc.rpartition("@")[2]
+        netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{hostport}"
         return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
@@ -62,6 +66,12 @@ class WorkerConfig:
         cams = []
         seen = set()
         for c in raw.get("cameras", []):
+            c = dict(c)
+            if "protected" in c:  # v1 name; renamed to priority in v2
+                if "priority" in c:
+                    raise ValueError(f"camera {c.get('id')!r}: use 'priority', not both 'protected' and 'priority'")
+                log.warning("camera %s: 'protected' is deprecated, use 'priority'", c.get("id"))
+                c["priority"] = c.pop("protected")
             cam = CameraConfig(**c)
             if not cam.id or cam.id in seen:
                 raise ValueError(f"camera id missing or duplicated: {cam.id!r}")

@@ -16,8 +16,9 @@ and ground-truth start_s/end_s offsets are resolved against it. Expect about
 0.1-0.5 s of alignment error (ffmpeg start-up plus RTSP latency); the report
 records the measured offset of the first observation.
 
-Synthetic or consented footage only. Never real children without the consent
-and authorization flow in PRIVACY_SECURITY_COMPLIANCE.
+Synthetic, staged or consented footage only: staff and actors who have signed
+the written monitoring acknowledgment (PRIVACY_SECURITY_COMPLIANCE). Audio is
+always dropped (-an). Never footage from restrooms or changing areas.
 """
 
 from __future__ import annotations
@@ -93,9 +94,13 @@ def main() -> int:
     ap.add_argument("--worker-arg", action="append", default=[],
                     help="extra argument for zeoatap-vision, repeatable (e.g. --worker-arg=--model=/m.onnx)")
     ap.add_argument("--camera-id", help="camera id (default: the GT session's camera_id, else cam1)")
-    ap.add_argument("--protected", action="store_true", help="raised-surface camera: 15 fps sampling")
+    ap.add_argument("--priority", action="store_true", help="register/POS camera: analysed at 15 fps instead of 5")
     ap.add_argument("--core-cameras", type=Path,
-                    help='core camera/zone config for the replay: {"cameras":[{"id","room_id","zones":[...]}]}')
+                    help='camera/zone config for the replay\'s -config: {"cameras":[{"id","room_id","zones":[...]}]} '
+                         "(zone kinds as in packages/contracts/API.md)")
+    ap.add_argument("--replay-arg", action="append", default=[],
+                    help="extra argument for the Go replay, repeatable (e.g. a POS events file, if the replay "
+                         "build accepts one)")
     ap.add_argument("--ground-truth", type=Path, help="GT file; times as start_s/end_s from video frame 0")
     ap.add_argument("--session-id", help="GT session that this video is (default: the first)")
     ap.add_argument("--goals", type=Path)
@@ -167,7 +172,7 @@ exec sleep 100000
         f"paths:\n  {cam_id}:\n    runOnDemand: {publisher}\n    runOnDemandStartTimeout: 20s\n"
         "    runOnDemandCloseAfter: 600s\n")
     (out / "vision-cameras.json").write_text(json.dumps(
-        {"cameras": [{"id": cam_id, "url": url, "protected": bool(args.protected)}]}, indent=2))
+        {"cameras": [{"id": cam_id, "url": url, "priority": bool(args.priority)}]}, indent=2))
 
     procs: list[subprocess.Popen] = []
 
@@ -244,7 +249,8 @@ exec sleep 100000
     (out / "core-cameras.json").write_text(json.dumps(core_cfg, indent=2))
     with open(out / "incidents.jsonl", "w") as f:
         r = subprocess.run([str(out / "replay"), "-config", str(out / "core-cameras.json"),
-                            "-observations", str(obs_path)], stdout=f, stderr=subprocess.PIPE, text=True)
+                            "-observations", str(obs_path), *args.replay_arg],
+                           stdout=f, stderr=subprocess.PIPE, text=True)
     (out / "replay.stderr.log").write_text(r.stderr)
     if r.returncode != 0:
         sys.exit(f"replay failed: {r.stderr}")
@@ -254,7 +260,7 @@ exec sleep 100000
         kinds[l["kind"]] = kinds.get(l["kind"], 0) + 1
 
     run_info = {"video": str(video), "video_info": info, "detector": args.detector, "camera_id": cam_id,
-                "protected": args.protected, "publish_start": iso(t_pub), "lead_in_s": lead, "t0": iso(t0), "publish_end": iso(t_end),
+                "priority": args.priority, "publish_start": iso(t_pub), "lead_in_s": lead, "t0": iso(t0), "publish_end": iso(t_end),
                 "first_observation_after_publish_start_s": round(first_ts - t_pub, 3),
                 "first_observation_relative_to_frame0_s": round(first_ts - t0, 3), "observations": len(obs),
                 "observation_sources": sorted({o["source"] for o in obs}), "replay_output_kinds": kinds,
@@ -266,8 +272,6 @@ exec sleep 100000
         return 0
     # Resolve GT offsets against the measured t0 and evaluate.
     sess["t0"] = iso(t0)
-    if "start_s" in sess["operating_span"] and sess["operating_span"].get("end_s") is None:
-        sess["operating_span"]["end_s"] = info["duration_s"]
     gt_doc["sessions"] = [sess]
     (out / "ground_truth.resolved.json").write_text(json.dumps(gt_doc, indent=2))
     sys.path.insert(0, str(HERE.parents[1] / "src"))

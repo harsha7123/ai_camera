@@ -141,9 +141,9 @@ def test_camera_outage_reconnects_and_recovers(camera):
         w.stop()
 
 
-def test_protected_camera_samples_at_15fps(camera):
+def test_priority_camera_samples_at_15fps(camera):
     cam = camera()
-    w = fast(CameraWorker(CameraConfig(id="cam1", url=cam.url, protected=True)))
+    w = fast(CameraWorker(CameraConfig(id="cam1", url=cam.url, priority=True)))
     w.start()
     try:
         assert wait_for(lambda: w.state == StreamState.STREAMING)
@@ -243,7 +243,7 @@ def test_pipeline_into_core_reports_outage_and_recovery(camera, tmp_path):
         assert obs["source"] == "MOCK"
 
     cams = tmp_path / "cameras.json"
-    cams.write_text(json.dumps({"cameras": [{"id": "cam1", "room_id": "infants-a", "zones": []}]}))
+    cams.write_text(json.dumps({"cameras": [{"id": "cam1", "room_id": "counter", "zones": []}]}))
     r = subprocess.run(["go", "run", "./cmd/replay", "-config", str(cams), "-observations", str(out)],
                        cwd=REPO / "services/core", capture_output=True, text=True, timeout=180)
     assert r.returncode == 0, r.stderr

@@ -3,10 +3,10 @@ scripts/test_media.py). No children and no footage. Skipped unless the
 models and the photo have been fetched:
 
   uv run python scripts/fetch_models.py --test-media
-  (FiDIP checks additionally need scripts/export_fidip.py)
 
 This checks that the pipeline runs end to end and produces contract-valid
-output. It is NOT an accuracy evaluation."""
+output. It is NOT an accuracy evaluation, and says nothing about restaurant
+CCTV."""
 
 import json
 import sys
@@ -42,9 +42,9 @@ def rgb():
 
 @pytest.fixture(scope="module")
 def pipeline():
-    from zeoatap_vision.pipeline import PosePipeline
+    from zeoatap_vision.pipeline import PersonPipeline
 
-    return PosePipeline(threads=4)
+    return PersonPipeline(pose_model=DEFAULT_POSE, threads=4)
 
 
 def test_adults_detected_tracked_posed_and_schema_valid(rgb, pipeline):
@@ -61,33 +61,15 @@ def test_adults_detected_tracked_posed_and_schema_valid(rgb, pipeline):
         obs.append(vw.process(SimpleNamespace(camera_id="cam1", wall_ts=1000 + i * 0.2, gray=gray, rgb=rgb)))
     for o in obs:
         jsonschema.validate(o, SCHEMA)
-        assert o["ai_available"] is True and o["source"] == "zeoatap-pose-p0"
+        assert o["ai_available"] is True and o["source"] == "zeoatap-person-p1"
         assert o["model_versions"]["detector"].startswith("yolox")
+        assert o["frame_size"] == [rgb.shape[1], rgb.shape[0]]
     tracks = obs[-1]["tracks"]
     assert len(tracks) >= PHOTO["min_adults"], tracks
     ids = {t["id"] for t in tracks}
     assert ids == {t["id"] for t in obs[-2]["tracks"]}  # static scene: stable ids
-    assert all(t["role"] == "adult" and t["held"] is False for t in tracks), tracks
+    assert all(t["role"] == "person" for t in tracks), tracks
     big = sorted(tracks, key=lambda t: (t["box"][3] - t["box"][1]), reverse=True)[:4]
     for t in big:  # the four unoccluded astronauts in the foreground
         assert t["score"] > 0.5 and t["pose_quality"] > 0.5 and t["visibility"] > 0.8, t
         assert t["box"][3] - t["box"][1] > 0.3
-
-
-@pytest.mark.skipif(not available(["fidip-hrnet-w48"]), reason="FiDIP not exported (scripts/export_fidip.py)")
-def test_fidip_export_and_decoding_agree_with_rtmpose_on_adults(rgb):
-    """FiDIP is trained on infants; on clearly visible adults its HRNet keypoints
-    should still land close to RTMPose's. This guards the ONNX export and the
-    heatmap decoding, not infant accuracy."""
-    from zeoatap_vision.inference import InfantPoseEstimator, PersonDetector, PoseEstimator
-    from zeoatap_vision.models import MODELS, resolve
-
-    pr = ["CPUExecutionProvider"]
-    boxes, scores = PersonDetector(resolve(DEFAULT_DETECTOR), MODELS[DEFAULT_DETECTOR].input_size, pr)(rgb)
-    boxes = boxes[np.argsort(-(boxes[:, 3] - boxes[:, 1]))][:4]
-    rk, _ = PoseEstimator(resolve(DEFAULT_POSE), MODELS[DEFAULT_POSE].input_size, pr)(rgb, boxes)
-    fk, fs = InfantPoseEstimator(resolve("fidip-hrnet-w48"), MODELS["fidip-hrnet-w48"].input_size, pr,
-                                 softmax_output=False)(rgb, boxes)
-    rel = np.linalg.norm(fk - rk, axis=-1) / (boxes[:, 3] - boxes[:, 1])[:, None]
-    assert np.median(rel) < 0.05, np.median(rel, axis=1)
-    assert fs.min() >= 0 and fs.max() <= 1

@@ -13,7 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/saimouli3/zeoatap/services/core/internal/store"
+	"github.com/harsha7123/ai_camera/services/core/internal/store"
 )
 
 // DefaultURL is the local development server.

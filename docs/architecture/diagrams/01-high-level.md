@@ -1,42 +1,36 @@
 # 01-high-level
 
-Source of truth: SYSTEM_ARCHITECTURE.md (kept in sync).
+Source of truth: SYSTEM_ARCHITECTURE.md §3 (kept in sync).
 
 ```mermaid
 flowchart LR
-  subgraph Facility["Facility LAN (trusted zone)"]
-    CAM[IP cameras] -->|RTSP over isolated camera VLAN| NVR[(Existing NVR - optional)]
-    CAM -->|RTSP sub/main stream| VW
-    NVR -.->|RTSP re-stream if cameras unreachable| VW
-    subgraph EDGE["Edge appliance (GPU)"]
-      VW["vision-worker (Python)<br/>ingest · decode · detect · track · pose"]
-      RB[("RAM ring buffer<br/>raw encoded segments")]
-      CORE["core (Go)<br/>event engine · incidents · alerts<br/>API · health · audit · retention"]
-      PG[(PostgreSQL)]
-      EV[("Encrypted evidence store<br/>(local disk)")]
-      WEB["web (Next.js dashboard)"]
-      VLM["vlm-worker (optional, P2)<br/>event-triggered summaries"]
+  subgraph Site["Restaurant (on premises)"]
+    subgraph CAMV["Camera VLAN (PoE)"]
+      CAM["IP cameras: 360 dining dome, register overheads,<br/>kitchen, back door/safe, entrance"]
     end
-    VW --> RB
-    VW -->|Observations NDJSON over HTTP, localhost| CORE
-    CORE -->|clip request| VW
-    VW -->|remuxed clip| EV
+    NVR[("Existing NVR (keeps recording)")]
+    subgraph POSV["POS VLAN"]
+      POS["POS (Toast / Square / Clover / other)"]
+    end
+    subgraph EDGE["Edge appliance (GPU)"]
+      VW["vision-worker (Python)<br/>RTSP · decode · detect · track · quality · ring buffer · clips"]
+      CORE["core (Go)<br/>event engine · incidents · alerts · API/SSE<br/>analytics · access log · audit · retention"]
+      CONN["POS connector (per vendor)"]
+      PG[("PostgreSQL (localhost)")]
+      EV[("Encrypted clip vault")]
+      WEB["web (static export, served by core)"]
+    end
+    CAM -->|RTSP| VW
+    CAM -.->|RTSP| NVR
+    POS -.->|vendor API / export| CONN
+    VW -->|"NDJSON observations, bearer token, 127.0.0.1:8090"| CORE
+    CONN -->|"NDJSON POSEvents, bearer token, internal listener"| CORE
+    CORE -->|"POST /v1/clips (127.0.0.1:8081)"| VW
     CORE --> PG
     CORE --> EV
-    WEB --> CORE
-    CORE -.->|evidence id only| VLM
-    VLM -.->|structured summary| CORE
-    STAFF[Staff tablets / workstations] -->|HTTPS + server-sent events| WEB
-    CORE --> SIREN[Local alert device / speaker]
+    CORE --> WEB
+    MGR["Manager / owner phone or PC"] -->|"HTTPS + SSE :8080"| CORE
   end
-  subgraph Cloud["Cloud control plane (no video by default)"]
-    FLEET[Fleet registry · config · signed model releases]
-    TELE[Metadata telemetry · uptime · alert-delivery stats]
-    PUSH[Notification relay: push / SMS]
-    RA[Remote admin portal]
-  end
-  CORE <-->|outbound-only mTLS| FLEET
-  CORE -->|metrics, incident metadata| TELE
-  CORE -->|alert w/o media| PUSH
-  RA <-->|via outbound tunnel| CORE
+  CORE -->|"webhook, no media"| RELAY["Push / SMS relay (roadmap)"]
+  CORE -.->|"metadata only (roadmap)"| CLOUD["Multi-site metadata plane (roadmap)"]
 ```
