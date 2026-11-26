@@ -1,0 +1,531 @@
+<title>Restaurant Camera Install Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* VOICE work: an installer's plan the owner, the manager and the electrician can all follow
+   IDEA the contractor's cutaway install drawing of the restaurant, made live: walls lowered, ceiling cable runs visible, every box clickable
+   PICTURE the 3D restaurant with cameras, view cones, blue Cat6 runs to a closet rack, packets travelling, people acting out each rule
+   COLOUR white page, ink #0b1f1c, deep green #00463c band, Cat6 blue #2f6fdb, video packets lime #9be15d, alerts coral #ff6f59
+   TYPE Inter Tight 700 + Inter
+   LAYOUT laptop: title row, 3D stage (2/3) beside a guide panel (1/3); below, the shopping list, wiring, data path, repo map. phone: title, stage, panel, sections */
+:root{color-scheme:light dark;--bg:light-dark(#ffffff,#0c1412);--ink:light-dark(#0b1f1c,#e8f1ee);--mute:light-dark(#4b5d59,#9fb3ad);--line:light-dark(#dde5e2,#24332f);--card:light-dark(#f4f8f6,#13201d);--green:#00463c;--lime:#e6f5c8;--blue:#2f6fdb;--coral:#ff6f59;--ok:#1d8a5b}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.55 Inter,system-ui,sans-serif;margin:0;overflow-x:clip}
+h1,h2,h3{font-family:"Inter Tight",Inter,sans-serif;letter-spacing:-.02em;line-height:1.08;margin:0}
+h1{font-size:clamp(30px,4vw,46px)}
+h2{font-size:clamp(24px,3vw,32px);margin-bottom:10px}
+h3{font-size:19px;margin-bottom:6px}
+p{margin:0 0 10px}
+a{color:var(--blue)}
+.band{padding-block:clamp(22px,3vw,44px);padding-left:max(5vw,16px,env(safe-area-inset-left,0px));padding-right:max(5vw,16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1320px;margin:0 auto}
+.top{background:var(--green);color:#fff}
+.top .wrap{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end}
+.top p{color:var(--lime);max-width:70ch;margin:10px 0 0}
+.totals{display:flex;gap:10px;flex-wrap:wrap}
+.tot{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25);border-radius:10px;padding:8px 14px;color:#fff}
+.tot b{display:block;font:700 24px "Inter Tight",sans-serif;white-space:nowrap}
+.tot span{font-size:13px;color:var(--lime)}
+.main{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:16px;align-items:stretch}
+.stage{position:relative;min-height:560px;border-radius:14px;overflow:hidden;background:#dfe7e4;border:1px solid var(--line)}
+.stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;transform:translate(-50%,-120%);background:rgba(11,31,28,.86);color:#fff;font:600 12px/1.2 Inter,sans-serif;padding:3px 7px;border-radius:6px;white-space:nowrap;pointer-events:auto;cursor:pointer}
+.lbl.cam{background:var(--blue)}
+.lbl.alert{background:var(--coral)}
+.lbl.dim{opacity:.35}
+.lbl.zone{background:rgba(255,255,255,.88);color:#0b1f1c;font-weight:500;font-size:11px;transform:translate(-50%,-50%)}
+.hud{position:absolute;left:10px;right:10px;bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.hud .clock{background:rgba(11,31,28,.88);color:#fff;border-radius:8px;padding:6px 10px;font:600 14px Inter,sans-serif;white-space:nowrap}
+.hud .note{background:rgba(255,255,255,.9);color:#0b1f1c;border-radius:8px;padding:6px 10px;font-size:13px}
+.toggles{position:absolute;top:10px;left:10px;display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:600 13px Inter,sans-serif;border:1px solid #b9c8c3;background:rgba(255,255,255,.92);color:#0b1f1c;border-radius:999px;padding:7px 12px;cursor:pointer;min-height:36px}
+.chip[aria-pressed=true]{background:#0b1f1c;color:#fff;border-color:#0b1f1c}
+.panel{border:1px solid var(--line);border-radius:14px;background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px solid var(--line)}
+.tabs button{font:600 14px Inter,sans-serif;background:none;border:0;color:var(--mute);padding:12px 6px;cursor:pointer;border-bottom:3px solid transparent;min-height:44px}
+.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--blue)}
+.pane{padding:16px;overflow:auto;flex:1;max-height:600px}
+.pane ul{padding-left:18px;margin:6px 0 10px}
+.pane li{margin-bottom:4px}
+.stepnav{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px}
+.btn{font:600 14px Inter,sans-serif;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:10px 14px;cursor:pointer;min-height:44px}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn:focus-visible,.chip:focus-visible,.tabs button:focus-visible{outline:3px solid var(--coral);outline-offset:2px}
+.dots{display:flex;gap:5px}
+.dots i{width:8px;height:8px;border-radius:50%;background:var(--line)}
+.dots i.on{background:var(--blue)}
+.scen{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.scen button{text-align:left;font:600 14px/1.25 Inter,sans-serif;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:10px;cursor:pointer;min-height:56px}
+.scen button small{display:block;font-weight:400;color:var(--mute);font-size:13px;margin-top:2px}
+.scen button.run{border-color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue)}
+.log{list-style:none;padding:0;margin:0;font-size:14px}
+.log li{display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px;padding:7px 0;border-top:1px solid var(--line)}
+.tag{font:600 12px Inter,sans-serif;border-radius:6px;padding:2px 6px;text-align:center;align-self:start;color:#fff;background:#56706a}
+.tag.Camera{background:#2f6fdb}.tag.Worker{background:#5b4bd1}.tag.Core{background:#00463c}.tag.POS{background:#a5620b}.tag.Alert{background:var(--coral)}.tag.Manager{background:#1d8a5b}.tag.Log{background:#56706a}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+p code,li code,dd code{overflow-wrap:anywhere}
+pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;overflow-x:auto;margin:8px 0}
+.inspect dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;margin:8px 0}
+.inspect dt{color:var(--mute);font-size:14px}
+.inspect dd{margin:0;font-size:14px}
+.price{font:700 22px "Inter Tight",sans-serif}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.builds{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 12px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--mute)}
+td.n,th.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+tfoot td{font-weight:700;border-bottom:0}
+.flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:12px 0}
+.flow div{border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:8px;padding:10px;background:var(--card);font-size:14px}
+.flow div b{display:block;font-size:15px}
+.flow div:nth-child(3){border-top-color:#5b4bd1}.flow div:nth-child(4){border-top-color:var(--green)}.flow div:nth-child(5){border-top-color:var(--coral)}.flow div:nth-child(6){border-top-color:var(--ok)}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps li{counter-increment:s;position:relative;padding:8px 0 8px 40px;border-top:1px solid var(--line)}
+.steps li::before{content:counter(s);position:absolute;left:0;top:8px;width:28px;height:28px;border-radius:50%;background:var(--green);color:#fff;font:700 14px/28px Inter,sans-serif;text-align:center}
+.warn{border-left:4px solid var(--coral);background:var(--card);padding:10px 14px;border-radius:0 8px 8px 0;font-size:15px}
+.verdict{display:inline-block;font:600 12px Inter,sans-serif;border-radius:6px;padding:2px 7px;background:var(--lime);color:#0b1f1c;white-space:nowrap}
+.verdict.no{background:#ffe1da}
+.foot{font-size:13px;color:var(--mute)}
+@media(max-width:1000px){.main{grid-template-columns:minmax(0,1fr)}.pane{max-height:none}.flow{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:720px){.top .wrap{grid-template-columns:minmax(0,1fr)}.grid2{grid-template-columns:minmax(0,1fr)}.stage{min-height:420px}}
+@media(max-width:600px){.flow{grid-template-columns:repeat(2,minmax(0,1fr))}.scen{grid-template-columns:minmax(0,1fr)}table{font-size:13px}th,td{padding:6px 4px}.stack thead{display:none}.stack tr{display:grid;padding-block:8px;border-bottom:1px solid var(--line)}.stack td{display:flex;justify-content:space-between;gap:12px;border:0;padding:3px 0}.stack td::before{content:attr(data-l);color:var(--mute);font-weight:600}.log li{grid-template-columns:66px minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){.lbl{transition:none}}
+</style>
+
+<header class="band top">
+  <div class="wrap">
+    <div>
+      <h1>Harbor Grill: cameras, cables and data, end to end</h1>
+      <p>A walk-through 3D model of one restaurant fitted with the Zeoatap Restaurant Watchdog. Drag to orbit, scroll to zoom, click any camera, cable or box. Run a scenario to watch video turn into an alert on the manager's phone.</p>
+    </div>
+    <div class="totals" id="totals"></div>
+  </div>
+</header>
+
+<section class="band" style="padding-top:18px">
+  <div class="wrap main">
+    <div class="stage" id="stage" aria-label="3D model of the restaurant install">
+      <div class="labels" id="labels"></div>
+      <div class="toggles">
+        <button class="chip" id="tCones" aria-pressed="true">View cones</button>
+        <button class="chip" id="tZones" aria-pressed="true">Rule zones</button>
+        <button class="chip" id="tCables" aria-pressed="true">Cables</button>
+        <button class="chip" id="tNight" aria-pressed="false">Night</button>
+        <button class="chip" id="tSmart" aria-pressed="false">Smart cameras</button>
+      </div>
+      <div class="hud"><span class="clock" id="clock">14:00 · open</span><span class="note" id="note">Pick a scenario on the right. Time is compressed.</span></div>
+    </div>
+    <aside class="panel">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-tour" aria-selected="true">Guided tour</button>
+        <button role="tab" id="tab-sim" aria-selected="false">Simulate</button>
+        <button role="tab" id="tab-inspect" aria-selected="false">Inspect</button>
+      </div>
+      <div class="pane" id="pane-tour"></div>
+      <div class="pane" id="pane-sim" hidden>
+        <div class="scen" id="scen"></div>
+        <h3>What the system is doing</h3>
+        <ul class="log" id="log"><li><span class="tag Log">Ready</span><span>Run a scenario. Each line is one hop: camera → vision worker → core rules → alert → manager.</span></li></ul>
+      </div>
+      <div class="pane inspect" id="pane-inspect"><p>Click a camera, cable, the rack, the register or the phone in the model to see what it is, what to buy and how it connects.</p></div>
+    </aside>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap">
+    <h2>What to buy</h2>
+    <p>Three ways to build the same system. Every item is a real product you can order today; prices are approximate US retail checked in November 2026 and move often, so confirm before buying. The budget build is the cheapest because one small AI box serves every camera.</p>
+    <div class="builds" id="buildBtns"></div>
+    <div class="scroll"><table class="stack" id="bom"></table></div>
+    <p class="foot" id="bomNote"></p>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap grid2">
+    <div>
+      <h2>Cameras with a built-in AI chip</h2>
+      <p>You asked to prefer a camera that has its own chip, where we install code and set rules. These are the options that genuinely let you run your own code, against the cheap camera that only has the maker's fixed rules.</p>
+      <div class="scroll"><table class="stack" id="smart"></table></div>
+    </div>
+    <div>
+      <h2>Our recommendation</h2>
+      <p><b>Start with the budget build.</b> Ordinary RTSP cameras at about $55 each plus one Jetson Orin Nano Super box ($249) running this repo gives the full feature set for about $1,000. That is less than two smart cameras.</p>
+      <p><b>Add smart cameras where they earn it.</b> Put a Luxonis OAK-1 PoE over the register and the back door (Hybrid build). Its own chip finds people at full frame rate and sends only small metadata, which keeps working even if the box is busy.</p>
+      <p><b>Avoid</b> cameras from makers barred from new US authorisations (Hikvision, Dahua and their rebrands) if you are in the US, and any camera that will not give an RTSP stream.</p>
+      <div class="warn">Honest status: the repo reads RTSP streams today. Running on a Jetson is expected to work (Linux, ARM64, ONNX Runtime GPU build) but has not been tested yet. The OAK and Raspberry Pi AI Camera paths need a small detector adapter in <code>services/vision-worker</code> that is not built yet.</div>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap">
+    <h2>How the wiring works</h2>
+    <div class="grid2">
+      <div>
+        <ol class="steps">
+          <li><b>One Cat6 cable per camera</b>, from the camera's ceiling spot back to the office closet. Power over Ethernet (PoE) sends power and video down the same cable, so no electrician is needed at the camera. Keep each run under 100 m (328 ft).</li>
+          <li><b>Into an 8-port PoE+ switch</b> in the closet. Six cameras draw about 30–40 W; the switch gives 63 W in total.</li>
+          <li><b>Switch → AI box</b> with one short patch cable. This switch carries only cameras and the box: a separate, private camera network (192.168.50.x) with no route to guest Wi-Fi or the POS.</li>
+          <li><b>AI box → office router</b> with a $15 USB Ethernet adapter, so managers reach the dashboard and the box can send phone alerts. Cameras never touch the internet.</li>
+          <li><b>POS stays on its own network.</b> A connector on the box pulls no-sale, void and refund events from the POS maker's cloud and posts them to the box (no card data).</li>
+          <li><b>Switch, box and router on a UPS</b>, so a power blip doesn't blind the cameras or lose a clip.</li>
+        </ol>
+      </div>
+      <div>
+        <h3>Addresses and settings to write down</h3>
+        <div class="scroll"><table class="stack" id="ips"></table></div>
+        <p class="foot">Set each camera's static IP and a strong password on the bench before mounting. Turn audio recording off in every camera's settings. RTSP address for Reolink: <code>rtsp://user:pass@192.168.50.11:554/h264Preview_01_main</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap">
+    <h2>How the data travels, and what the code does at each hop</h2>
+    <div class="flow">
+      <div><b>1 · Camera</b>Records 25 fps H.264 and streams it over RTSP on the Cat6 cable.</div>
+      <div><b>2 · Switch</b>Delivers about 4 Mbps per camera to the box on the private camera network.</div>
+      <div><b>3 · Vision worker</b>Takes 5 frames a second (15 at the register), finds people, tracks them and writes an anonymous observation. No faces are stored.</div>
+      <div><b>4 · Core rules</b>Checks zones, business hours and POS events, then opens an incident and cuts an encrypted 30 s clip from a 2-minute buffer.</div>
+      <div><b>5 · Alert</b>Shows on the dashboard and, when that rule's alerts are switched on, pings the manager's phone.</div>
+      <div><b>6 · Manager</b>Watches the clip and marks it OK, coach or investigate. The AI flags; people decide.</div>
+    </div>
+    <div class="grid2">
+      <div>
+        <h3>What leaves the vision worker (one frame)</h3>
+<pre>{"camera_id":"cam-counter","capture_ts":"2026-11-26T20:05:24.4Z",
+ "source":"zeoatap-person-p1","ai_available":true,
+ "frame_size":[1280,720],"quality":{"degraded":false},
+ "tracks":[{"id":"t7","role":"person","score":0.91,
+            "box":[0.44,0.12,0.52,0.33]}]}</pre>
+        <p class="foot">A box and an anonymous track id, never a name or face. Core decides "staff" only from time spent behind the counter or on a kitchen camera.</p>
+      </div>
+      <div>
+        <h3>What the manager receives</h3>
+<pre>{"event_type":"pos_refund_no_customer","status":"ALERTED",
+ "room_id":"counter","pos_ref":"T-1042",
+ "detail":"refund $42.10 on Register 1 with nobody seen
+           at the customer side (POS employee E-17)",
+ "clips":[{"camera_id":"cam-counter","partial":false}]}</pre>
+        <p class="foot">Every rule starts in SHADOW: recorded for the owner, nobody paged. After a 30–60 day tuning period, switch real alerts on per rule with <code>"alerting_enabled": true</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap grid2">
+    <div>
+      <h2>How the GitHub repo helps</h2>
+      <p>Everything that runs on the box is in <a href="https://github.com/harsha7123/ai_camera">harsha7123/ai_camera</a>. You buy the hardware; the repo is the brain.</p>
+      <div class="scroll"><table class="stack" id="repo"></table></div>
+    </div>
+    <div>
+      <h2>Install day, in order</h2>
+      <ol class="steps">
+        <li>Bench-set each camera: update firmware, static IP, strong password, audio off, check the RTSP stream plays in VLC.</li>
+        <li>Flash JetPack onto the box's NVMe SSD, then <code>git clone https://github.com/harsha7123/ai_camera</code> and install Go, uv, ffmpeg and PostgreSQL.</li>
+        <li>Pull the Cat6 runs, crimp the ends, test every run with the tester, then mount the cameras.</li>
+        <li>Copy <code>services/core/site.example.json</code> to <code>site.json</code>: business hours, rooms, cameras, register, and the zones drawn on each camera's snapshot.</li>
+        <li>Put the RTSP addresses in the vision worker's <code>cameras.json</code>; start core, then the worker. Open <code>http://&lt;box&gt;:8080</code> on the office tablet.</li>
+        <li>Post camera notices at the entrance and staff areas; get each employee's signed acknowledgment.</li>
+        <li>Run 30 days in SHADOW and mark every flag; check accuracy with <code>tools/eval</code>; then switch alerts on rule by rule.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:8px">
+  <div class="wrap">
+    <p class="foot">Prices: <a href="https://www.walmart.com/ip/127051761">Reolink RLC-510A (Walmart)</a> · <a href="https://marketplace.nvidia.com/en-us/enterprise/robotics-edge/jetson-orin-nano-super-developer-kit">Jetson Orin Nano Super (NVIDIA)</a> · <a href="https://shop.luxonis.com/products/oak-1-poe">OAK-1 PoE (Luxonis)</a> · <a href="https://www.sparkfun.com/raspberry-pi-ai-camera.html">Raspberry Pi AI Camera (SparkFun)</a> · <a href="https://www.axis.com/products/axis-m3085-v">AXIS M3085-V (Axis)</a> · <a href="https://www.tp-link.com/us/products/details/tl-sg1210p.html">TP-Link TL-SG1210P</a> · <a href="https://reolink.com/product/fe-p">Reolink FE-P</a>. Prices marked "about" are typical retail, not quotes. Not legal advice: confirm camera notice and employee-monitoring rules with counsel in your state.</p>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+{
+/* ---------------- data ---------------- */
+const CAMS=[
+ {id:'cam-entrance',name:'Front door (people count)',pos:[-5,2.7,6.2],tgt:[-5,0,3.6],model:'Reolink RLC-510A',kind:'bullet',ip:'192.168.50.11',fps:5,why:'Counts entries and exits across the door line (A1/A2) and catches after-hours entry at the front.',rules:'Foot traffic, peak hours, after_hours_intrusion'},
+ {id:'cam-counter',name:'Register 1 overhead',pos:[4.5,2.7,3.6],tgt:[4.5,0,4.8],model:'Reolink RLC-520A',kind:'dome',smart:true,ip:'192.168.50.12',fps:15,why:'Watches the till, the customer side and the queue. Paired with POS events for no-sales and refunds. Angle it so it never sees card numbers or the PIN pad (PCI).',rules:'pos_no_sale, pos_refund_no_customer, long_queue, long_wait, unattended_post'},
+ {id:'cam-dining',name:'Dining room',pos:[-3.5,2.7,2.2],tgt:[-3.5,0,3.4],model:'Reolink RLC-520A',kind:'dome',ip:'192.168.50.13',fps:5,why:'Covers the dining floor for slips and falls and after-hours entry. A 360° fisheye (Reolink FE-P) is an option if its RTSP stream is confirmed.',rules:'person_down, after_hours_intrusion'},
+ {id:'cam-kitchen',name:'Kitchen line',pos:[4,2.7,-1.4],tgt:[6,0,-4.6],model:'Reolink RLC-520A',kind:'dome',ip:'192.168.50.14',fps:5,why:'Staff-only camera: everyone it sees is treated as staff. Covers falls on the line and the walk-in cooler door.',rules:'person_down, cooler access log, after_hours_intrusion'},
+ {id:'cam-back',name:'Back door and cooler',pos:[9.4,2.7,-0.6],tgt:[8.8,0,-3.8],model:'Reolink RLC-510A',kind:'bullet',smart:true,ip:'192.168.50.15',fps:5,why:'Every back-door and cooler visit goes into the access log; anyone after hours is an intrusion.',rules:'access log, after_hours_intrusion, restricted_zone_entry'},
+ {id:'cam-office',name:'Office and safe',pos:[-6.2,2.7,-3],tgt:[-8.6,0,-5.6],model:'Reolink RLC-520A',kind:'dome',ip:'192.168.50.16',fps:5,why:'Logs who opens the safe and when. A person not recognised as staff at the office door is flagged.',rules:'access log (safe), restricted_zone_entry, after_hours_intrusion'}
+];
+const RACK=[-6.6,0,-6.4];
+const ITEMS={
+ reo510:{n:'Reolink RLC-510A 5MP PoE bullet (RTSP)',p:50,u:'about $47–55'},
+ reo520:{n:'Reolink RLC-520A 5MP PoE dome (RTSP)',p:55,u:'about $50–60'},
+ oak:{n:'Luxonis OAK-1 PoE (on-camera AI, open source)',p:379,u:'$379 list'},
+ jetson:{n:'NVIDIA Jetson Orin Nano Super Developer Kit (AI box)',p:249,u:'$249 list'},
+ nvme:{n:'M.2 NVMe SSD 500 GB for the box (OS, clips, database)',p:45,u:'about'},
+ pi5:{n:'Raspberry Pi 5 8 GB + NVMe HAT + PSU (light host, no AI)',p:150,u:'about, Pi prices rose in 2025–26'},
+ sw:{n:'TP-Link TL-SG1210P 8-port PoE+ switch, 63 W',p:95,u:'about $85–100; any 8-port PoE+ ≥ 60 W'},
+ usb:{n:'USB 3 Gigabit Ethernet adapter (box → office router)',p:15,u:'about'},
+ cat6:{n:'Cat6 riser (CMR) cable, 500 ft box',p:90,u:'about; plenum (CMP) if your ceiling is a return-air plenum'},
+ tools:{n:'Cat6 RJ45 plugs (50) + crimper + cable tester',p:40,u:'about'},
+ mount:{n:'J-hooks, cable clips, camera junction boxes',p:35,u:'about'},
+ ups:{n:'UPS 600 VA (switch, box, router)',p:75,u:'about'},
+ sign:{n:'Camera notice signs (entrance, staff area)',p:15,u:'about'}
+};
+const BUILDS={
+ budget:{label:'Budget (recommended)',lines:[['reo510',2],['reo520',4],['jetson',1],['nvme',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'Six ordinary RTSP cameras, one Jetson box running this repo. Lowest cost; all AI runs on the box.'},
+ hybrid:{label:'Hybrid (smart where it counts)',lines:[['reo510',1],['reo520',3],['oak',2],['jetson',1],['nvme',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'OAK-1 PoE smart cameras over the register and the back door; the Jetson handles the other four. Needs the OAK detector adapter (not built yet).'},
+ smart:{label:'All smart cameras',lines:[['oak',6],['pi5',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'Every camera runs detection on its own chip, so the host only needs to run core, the database and the dashboard. Most expensive; needs the OAK adapter.'}
+};
+const SMART=[
+ ['Luxonis OAK-1 PoE','$379','Yes: open-source DepthAI, load your own detector onto the camera\'s Myriad X chip','PoE, IP67, 12 MP. Best "install our code" camera at a sane price','yes'],
+ ['Raspberry Pi AI Camera (Sony IMX500) + Pi 5','about $90 + $150','Yes: the model runs on the image sensor; Python on the Pi','Cheapest programmable option, but a DIY build: needs a housing and a PoE HAT, not a ready CCTV camera','yes'],
+ ['AXIS M3085-V','about $500','Partly: deep-learning chip, third-party ACAP apps, built-in line-crossing and object-in-area rules','Commercial grade and supported; custom code means writing an ACAP app with Axis\'s SDK','partly'],
+ ['Reolink RLC-510A / 520A','about $50–55','No: built-in person/vehicle alerts are fixed by the maker','Use as a plain RTSP camera; our box does the AI. Cheapest by far','no']
+];
+const REPO=[
+ ['services/vision-worker','AI box','Reads every camera\'s RTSP stream, detects and tracks people, keeps a 2-minute buffer, cuts clips'],
+ ['services/core','AI box','Rules (intrusion, refunds, queues, falls, tamper), incidents, POS ingest, encrypted clips, audit log, alerts'],
+ ['apps/web','Built once, served by core','The dashboard on the manager\'s tablet or phone: alerts, clips, traffic heat map, access log'],
+ ['services/core/site.example.json','Edited on install day','Your restaurant: hours, areas, cameras, zones, registers, which rules may alert'],
+ ['packages/contracts/API.md','For the POS connector','How POS events (no-sale, void, refund) are sent to the box'],
+ ['tools/eval','Your laptop','Measures accuracy during the 30-day pilot before alerts go live']
+];
+const STEPS=[
+ {t:'1 · The restaurant and what we watch',v:[16,17,17],c:[0,0,0],hi:[],b:'<p>Harbor Grill: a front door, a counter with Register 1, a dining room, a kitchen with a walk-in cooler, a back door and an office with the safe and the network closet.</p><ul><li>Coloured patches on the floor are <b>rule zones</b>: the door count line, the queue, the register post, the cooler, the safe.</li><li>Cameras are never placed in restrooms, changing rooms or break rooms. Video only, no audio.</li></ul>'},
+ {t:'2 · Six cameras, and why each spot',v:[2,14,14],c:[0,0,0],hi:CAMS.map(c=>c.id),b:'<p>Each camera is a ceiling dome or a wall bullet, 2.7 m up. The blue cones show what each one sees.</p><ul><li><b>Entrance</b> counts people across the door.</li><li><b>Register overhead</b> pairs with POS events.</li><li><b>Dining</b> and <b>kitchen</b> watch for falls.</li><li><b>Back door</b> and <b>office</b> log every visit to the cooler and safe.</li></ul><p>Click a camera for the exact model and settings.</p>'},
+ {t:'3 · Wiring: one cable per camera',v:[-2,15,6],c:[-1,1.5,-2],hi:['cables'],b:'<p>Each camera gets one <b>blue Cat6 cable</b> running along the ceiling to the office closet. That one cable carries both power (PoE) and video.</p><ul><li>All six runs land on an <b>8-port PoE+ switch</b>.</li><li>The switch is a private camera network: no guest Wi-Fi, no POS, no internet.</li><li>The longest run here is about 25 m; the limit is 100 m.</li></ul><p>The green dots moving to the closet are video packets.</p>'},
+ {t:'4 · The AI box in the closet',v:[-3,4,-2],c:[-6.6,0.8,-6.4],hi:['rack'],b:'<p>In the closet rack: the <b>PoE switch</b>, the <b>Jetson Orin Nano Super</b> AI box and a <b>UPS</b>. The office router sits beside them.</p><ul><li>The box runs this repo: the vision worker, core, PostgreSQL and the dashboard.</li><li>Video and clips never leave the building.</li><li>It needs about 25 W, less than a light bulb.</li></ul>'},
+ {t:'5 · The POS link',v:[8,7,10],c:[4.5,1,3.4],hi:['pos'],b:'<p>Register 1 stays on the POS maker\'s own network. A small connector on the box fetches <b>no-sale, void, refund and comp</b> events from the POS cloud (Toast, Square, Clover) and posts them to core.</p><ul><li>No card data is ever accepted.</li><li>The register camera\'s clip is matched to the POS ticket number, for chargebacks and complaints.</li><li>The POS and the box must agree on time (NTP).</li></ul><p class="foot">The vendor connectors are not built yet; the API they post to is.</p>'},
+ {t:'6 · From pixels to people, no faces',v:[9,6,9],c:[4.5,0.5,4.8],hi:['cam-counter'],b:'<p>The vision worker takes 5 frames a second per camera (15 at the register). It finds each person, gives them an anonymous track id and draws a box.</p><ul><li>It sends core a tiny JSON <b>observation</b> per frame: boxes and ids, no image, no face.</li><li>Someone counts as <b>staff</b> after about 5 s behind the counter, or on a kitchen camera.</li></ul>'},
+ {t:'7 · Rules → alert → a person decides',v:[14,10,12],c:[0,0,0],hi:['phone'],b:'<p>Core checks each observation against the zones and business hours. A refund with nobody at the counter, a person after hours or a long line becomes an <b>incident</b> with an encrypted 30-second clip.</p><ul><li>The manager\'s phone or tablet shows the alert and the clip.</li><li>They mark it <b>OK</b>, <b>coach</b> or <b>investigate</b>.</li><li>No discipline is ever based on an alert alone.</li></ul><p>Try it: open <b>Simulate</b>.</p>'},
+ {t:'8 · Reports and the 30-day pilot',v:[0,22,8],c:[0,0,0],hi:['entrance'],b:'<p>Beyond alerts, the dashboard shows <b>foot traffic</b> from the door line as a day × hour heat map, and an <b>access log</b> of every cooler, safe and back-door visit.</p><ul><li>Week 1–4: every alert rule runs in SHADOW; the owner reviews and marks flags.</li><li>Then switch real alerts on, one rule at a time.</li><li>Prove ROI: cash variance, refunds, chargebacks won, incidents settled by clip.</li></ul>'}
+];
+
+/* ---------------- tables ---------------- */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=v=>'$'+v.toLocaleString('en-US');
+const total=k=>BUILDS[k].lines.reduce((s,[i,q])=>s+ITEMS[i].p*q,0);
+let build='budget';
+function renderBom(){
+  $('buildBtns').innerHTML=Object.keys(BUILDS).map(k=>`<button class="chip" data-b="${k}" aria-pressed="${k===build}">${esc(BUILDS[k].label)} · ${money(total(k))}</button>`).join('');
+  const rows=BUILDS[build].lines.map(([i,q])=>{const it=ITEMS[i];return `<tr><td data-l="Item">${esc(it.n)}</td><td class="n" data-l="Qty">${q}</td><td class="n" data-l="Each">${money(it.p)}</td><td class="n" data-l="Subtotal">${money(it.p*q)}</td><td data-l="Price basis">${esc(it.u)}</td></tr>`}).join('');
+  $('bom').innerHTML=`<thead><tr><th>Item</th><th class="n">Qty</th><th class="n">Each</th><th class="n">Subtotal</th><th>Price basis</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td data-l="">Total, before tax and shipping</td><td></td><td></td><td class="n" data-l="Total">${money(total(build))}</td><td></td></tr></tfoot>`;
+  $('bomNote').textContent=BUILDS[build].note+' Labour is not included; a low-voltage installer typically charges per cable drop.';
+  $('totals').innerHTML=Object.keys(BUILDS).map(k=>`<div class="tot"><b>${money(total(k))}</b><span>${esc(BUILDS[k].label.replace(' (recommended)',''))}</span></div>`).join('');
+  document.querySelectorAll('#buildBtns .chip').forEach(b=>b.onclick=()=>{build=b.dataset.b;renderBom();if(window.setSmart)window.setSmart(build!=='budget')});
+}
+$('smart').innerHTML='<thead><tr><th>Camera</th><th>Price</th><th>Install our code on it?</th><th>Notes</th></tr></thead><tbody>'+SMART.map(r=>`<tr><td data-l="Camera"><b>${esc(r[0])}</b></td><td data-l="Price" class="n">${esc(r[1])}</td><td data-l="Own code"><span class="verdict ${r[4]==='no'?'no':''}">${r[4]==='yes'?'Yes':r[4]==='partly'?'Partly':'No'}</span> ${esc(r[2].replace(/^(Yes|No|Partly): /,''))}</td><td data-l="Notes">${esc(r[3])}</td></tr>`).join('')+'</tbody>';
+$('repo').innerHTML='<thead><tr><th>Folder</th><th>Runs on</th><th>What it does for you</th></tr></thead><tbody>'+REPO.map(r=>`<tr><td data-l="Folder"><code>${esc(r[0])}</code></td><td data-l="Runs on">${esc(r[1])}</td><td data-l="Does">${esc(r[2])}</td></tr>`).join('')+'</tbody>';
+$('ips').innerHTML='<thead><tr><th>Device</th><th>Address</th><th>Note</th></tr></thead><tbody>'+CAMS.map(c=>`<tr><td data-l="Device">${esc(c.name)}</td><td data-l="Address"><code>${c.ip}</code></td><td data-l="Note">${c.fps} fps analysed</td></tr>`).join('')+'<tr><td data-l="Device">AI box, camera side</td><td data-l="Address"><code>192.168.50.2</code></td><td data-l="Note">built-in Ethernet</td></tr><tr><td data-l="Device">AI box, office side</td><td data-l="Address"><code>DHCP</code></td><td data-l="Note">USB adapter to router</td></tr></tbody>';
+renderBom();
+
+/* ---------------- tabs ---------------- */
+const tabs=['tour','sim','inspect'];
+function showTab(n){tabs.forEach(t=>{$('tab-'+t).setAttribute('aria-selected',t===n);$('pane-'+t).hidden=t!==n})}
+tabs.forEach(t=>$('tab-'+t).onclick=()=>showTab(t));
+
+if(!window.THREE||!THREE.OrbitControls){$('stage').insertAdjacentHTML('beforeend','<p style="position:absolute;inset:40% 10% auto;text-align:center">The 3D model needs WebGL and could not load here. Everything below still applies.</p>')}
+else{
+/* ---------------- scene ---------------- */
+const stage=$('stage'),labelsEl=$('labels');
+const labels=[];
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+stage.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(42,1,0.1,200);
+cam.position.set(16,17,17);
+const ctl=new THREE.OrbitControls(cam,renderer.domElement);
+ctl.enableDamping=true;ctl.maxPolarAngle=Math.PI*0.48;ctl.minDistance=4;ctl.maxDistance=45;
+const hemi=new THREE.HemisphereLight(0xffffff,0x8a9a94,0.9);scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xffffff,0.7);sun.position.set(8,20,10);scene.add(sun);
+const M=c=>new THREE.MeshLambertMaterial({color:c});
+const pick=[];
+function box(w,h,d,c,x,y,z,info){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),M(c));m.position.set(x,y+h/2,z);scene.add(m);if(info){m.userData.info=info;pick.push(m)}return m}
+function patch(x1,z1,x2,z2,c,y=0.01,op=1){const m=new THREE.Mesh(new THREE.PlaneGeometry(x2-x1,z2-z1),new THREE.MeshLambertMaterial({color:c,transparent:op<1,opacity:op}));m.rotation.x=-Math.PI/2;m.position.set((x1+x2)/2,y,(z1+z2)/2);scene.add(m);return m}
+/* floors */
+patch(-11,-8,11,8,0xc9d3cf,0);
+patch(-10,-2,2,7,0xd8b98e);patch(2,1.6,10,7,0xe7d6bd);patch(0,-7,10,1,0xe3e9ea);patch(-10,-7,-4.5,-2,0xcfd6dd);patch(7.6,-7,10,-4.4,0xbfe0ea);
+/* walls (cutaway height) */
+const W=0xf3efe8,WH=1.1;
+[[-10,7,-6.2,7],[-3.8,7,10,7],[-10,-7,10,-7],[-10,-7,-10,7],[10,-7,10,-2.6],[10,-1.4,10,7],[0,1,2.6,1],[5.4,1,10,1],[-10,-2,-6.6,-2],[-5.4,-2,-4.5,-2],[-4.5,-7,-4.5,-2],[7.6,-4.4,8.4,-4.4],[9.4,-4.4,10,-4.4],[7.6,-7,7.6,-4.4]].forEach(([x1,z1,x2,z2])=>{const L=Math.hypot(x2-x1,z2-z1);const m=box(Math.abs(x2-x1)||0.15,WH,Math.abs(z2-z1)||0.15,W,(x1+x2)/2,0,(z1+z2)/2);void L});
+/* furniture */
+const tables=[[-8,4.5],[-5.5,4.5],[-8,1.5],[-5.5,1.5],[-2,1.5],[-8,-0.6],[-2,4.6]];
+tables.forEach(([x,z])=>{box(1.1,0.05,1.1,0x7a5232,x,0.74,z);box(0.12,0.74,0.12,0x3b2a1c,x,0,z);[[0.8,0],[-0.8,0],[0,0.8],[0,-0.8]].forEach(([a,b])=>box(0.42,0.45,0.42,0x9c7350,x+a,0,z+b))});
+box(5,1.05,0.8,0x6b4a33,4.5,0,3.0,{title:'Front counter',body:'The counter splits staff (behind, the <b>post</b> zone) from customers (in front, the <b>customer side</b> and <b>queue</b> zones).'});
+const reg=box(0.5,0.32,0.4,0x1f2a28,4.5,1.05,3.0,{title:'Register 1 (POS)',body:'<p>Your existing POS terminal, on the POS maker\'s own network. Nothing is installed on it.</p><dl><dt>Sends</dt><dd>no-sale, void, refund, comp events via the POS cloud → connector on the AI box → <code>POST /internal/v1/pos-events</code></dd><dt>Never</dt><dd>card numbers or PINs</dd><dt>Rules</dt><dd><code>pos_no_sale</code>, <code>pos_refund_no_customer</code></dd></dl>',id:'pos'});
+box(0.36,0.26,0.04,0x9be15d,4.5,1.37,2.85);
+/* kitchen */
+box(6,0.92,0.8,0xb8c2c6,5.6,0,-5.6);box(1,1,0.8,0x8e9aa0,2.6,0,-5.6);box(4,0.92,0.7,0xb8c2c6,5,0,-2.6);box(1.2,1.0,0.8,0x6f7a80,8.3,0,-2.6);
+const cooler=box(2.4,2.3,2.6,0xdce9ee,8.8,0,-5.7,{title:'Walk-in cooler',body:'A <b>secure</b> zone. Every visit is logged (staff or person, start and end). After hours it is an intrusion.'});
+const safe=box(0.7,0.9,0.6,0x2b2f33,-9.2,0,-6.3,{title:'Office safe',body:'A <b>secure</b> zone watched by the office camera: every opening goes in the access log.'});
+box(1.6,0.75,0.8,0x7a5232,-8.2,0,-3.2);
+/* back door & front door frames */
+box(0.12,2.1,1.2,0x8a5a2b,10,0,-2);box(1.6,2.1,0.12,0x3d6f66,-5,0,7);
+/* rack */
+const rack=new THREE.Group();scene.add(rack);rack.position.set(...RACK);
+const rk=new THREE.Mesh(new THREE.BoxGeometry(0.7,1.5,0.6),M(0x2a3431));rk.position.y=0.75;rack.add(rk);
+const sw=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.08,0.4),M(0x3e5d9e));sw.position.set(0,1.42,0.12);rack.add(sw);
+const jet=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.18,0.36),M(0x76b900));jet.position.set(0,1.2,0.12);rack.add(jet);
+const ups=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.4,0.5),M(0x15191a));ups.position.set(0,0.2,0.05);rack.add(ups);
+const router=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.08,0.3),M(0xf0f0f0));router.position.set(0.85,1.0,0.1);rack.add(router);
+[[sw,{title:'PoE+ switch (camera network)',body:'<p class="price">about $85–100</p><dl><dt>Model</dt><dd>TP-Link TL-SG1210P, 8 PoE+ ports, 63 W budget (any 8-port PoE+ ≥ 60 W works)</dd><dt>Ports</dt><dd>6 cameras + 1 to the AI box; 1 spare</dd><dt>Power used</dt><dd>about 30–40 W for six cameras</dd><dt>Network</dt><dd>192.168.50.0/24, cameras and box only: no internet, no guest Wi-Fi, no POS</dd></dl>',id:'rack'}],
+ [jet,{title:'AI box: Jetson Orin Nano Super',body:'<p class="price">$249 + about $45 SSD</p><dl><dt>Runs</dt><dd>this repo: vision worker, core, PostgreSQL, dashboard</dd><dt>Power</dt><dd>about 7–25 W</dd><dt>Ports</dt><dd>built-in Ethernet → camera switch; USB adapter → office router</dd><dt>Storage</dt><dd>NVMe SSD: OS, database, encrypted clips (30-day retention)</dd><dt>Status</dt><dd>expected to work (ARM64 Linux); not yet tested on Jetson</dd></dl>',id:'rack'}],
+ [ups,{title:'UPS 600 VA',body:'<p class="price">about $75</p><p>Keeps the switch, AI box and router up through short power cuts, so cameras stay powered (they draw PoE from the switch) and clips are not lost.</p>',id:'rack'}],
+ [router,{title:'Office router (existing)',body:'<p>Your current internet router. The AI box connects to it with a USB Ethernet adapter so managers can open the dashboard and phone alerts can go out. Cameras are not connected to it.</p>',id:'rack'}]
+].forEach(([m,i])=>{m.userData.info=i;pick.push(m)});
+/* zones */
+const zoneGroup=new THREE.Group();scene.add(zoneGroup);
+function zone(x1,z1,x2,z2,c,label){const m=new THREE.Mesh(new THREE.PlaneGeometry(x2-x1,z2-z1),new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:0.32,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set((x1+x2)/2,0.03,(z1+z2)/2);zoneGroup.add(m);return label?addLabel(label,[(x1+x2)/2,0.1,(z1+z2)/2],'zone',zoneGroup):null}
+const zLabels=[zone(-6.2,3.45,-3.8,3.75,0xff3b30,'Count line'),zone(2.8,4.2,6.2,7,0xf0a500,'Queue'),zone(3.6,3.45,5.4,4.15,0x2f6fdb,'Customer side'),zone(2.2,1.2,6.8,2.55,0x00a862,'Post (staff)'),zone(7.8,-4.4,9.8,-3.2,0xff6f59,null),zone(-9.8,-6.9,-8.4,-5.4,0xff6f59,'Safe'),zone(-10,-2,2,7,0x9be15d,null),zone(8.8,-2.8,10,-1.2,0xff6f59,'Back door')];
+/* cameras, cones, cables */
+const camObjs={},cables={};
+const coneMat=new THREE.MeshBasicMaterial({color:0x2f6fdb,transparent:true,opacity:0.12,depthWrite:false,side:THREE.DoubleSide});
+const coneGroup=new THREE.Group(),cableGroup=new THREE.Group();scene.add(coneGroup);scene.add(cableGroup);
+const cableMat=new THREE.MeshLambertMaterial({color:0x2f6fdb});
+const pktGeo=new THREE.SphereGeometry(0.07,8,8),pktMat=new THREE.MeshBasicMaterial({color:0x9be15d}),pktMeta=new THREE.MeshBasicMaterial({color:0xffd166});
+const packets=[];
+CAMS.forEach(c=>{
+  const g=new THREE.Group();g.position.set(...c.pos);scene.add(g);
+  const body=c.kind==='dome'?new THREE.Mesh(new THREE.SphereGeometry(0.2,16,10,0,Math.PI*2,0,Math.PI/2),M(0xf5f5f5)):new THREE.Mesh(new THREE.BoxGeometry(0.18,0.18,0.42),M(0xf5f5f5));
+  if(c.kind==='dome')body.rotation.x=Math.PI;
+  g.add(body);const base=new THREE.Mesh(new THREE.CylinderGeometry(0.24,0.24,0.05,16),M(0xe6e6e6));base.position.y=0.05;g.add(base);
+  const chip=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.06,0.16),M(0x76b900));chip.position.y=0.12;chip.visible=false;g.add(chip);
+  if(c.kind!=='dome'){const t=new THREE.Vector3(...c.tgt);body.lookAt(t)}
+  const info={id:c.id,title:c.name,body:`<p class="price">${esc(ITEMS[c.kind==='dome'?'reo520':'reo510'].u.replace('about ','about '))}</p><dl><dt>Camera</dt><dd>${esc(c.model)} (5 MP, PoE, RTSP)${c.smart?' · smart option: Luxonis OAK-1 PoE':''}</dd><dt>Mount</dt><dd>${c.kind==='dome'?'ceiling dome':'wall bullet'}, 2.7 m</dd><dt>Why here</dt><dd>${esc(c.why)}</dd><dt>Rules</dt><dd>${esc(c.rules)}</dd><dt>Address</dt><dd><code>${c.ip}</code>, analysed at ${c.fps} fps</dd><dt>Cable</dt><dd>Cat6, about <span data-len="${c.id}"></span> m to the closet</dd></dl>`};
+  [body,base].forEach(m=>{m.userData.info=info;pick.push(m)});
+  /* cone */
+  const from=new THREE.Vector3(...c.pos),to=new THREE.Vector3(...c.tgt),len=from.distanceTo(to)*1.35;
+  const cone=new THREE.Mesh(new THREE.ConeGeometry(len*0.55,len,24,1,true),coneMat.clone());
+  cone.position.copy(from).lerp(to.clone().sub(from).normalize().multiplyScalar(len/2).add(from),1);
+  cone.lookAt(from);cone.rotateX(Math.PI/2);coneGroup.add(cone);
+  /* cable: up to ceiling, along x then z, to rack */
+  const y=2.95,R=new THREE.Vector3(RACK[0],y,RACK[2]);
+  const pts=[from.clone(),new THREE.Vector3(c.pos[0],y,c.pos[2]),new THREE.Vector3(c.pos[0],y,RACK[2]),R,new THREE.Vector3(RACK[0],1.45,RACK[2])];
+  const path=new THREE.CurvePath();for(let i=0;i<pts.length-1;i++)if(pts[i].distanceTo(pts[i+1])>0.01)path.add(new THREE.LineCurve3(pts[i],pts[i+1]));
+  const tube=new THREE.Mesh(new THREE.TubeGeometry(path,64,0.035,6,false),cableMat);
+  tube.userData.info={id:'cables',title:'Cat6 cable run: '+c.name,body:`<p>One Cat6 cable carries power (PoE, about 5–6 W) and video (about 4 Mbps) for this camera.</p><dl><dt>Length</dt><dd>about ${Math.round(path.getLength()+3)} m including slack (max 100 m)</dd><dt>Route</dt><dd>up to the ceiling, along J-hooks every 1.2–1.5 m, down into the closet</dd><dt>Ends</dt><dd>RJ45 plugs, tested with a cable tester before mounting</dd></dl>`};
+  pick.push(tube);cableGroup.add(tube);
+  cables[c.id]={path,len:path.getLength()};
+  camObjs[c.id]={g,chip,cone,c};
+  addLabel(c.name,c.pos,'cam',null,c.id);
+});
+/* POS/data path: register → router (dashed) */
+const posPath=new THREE.CurvePath();
+const pp=[new THREE.Vector3(4.5,1.2,3),new THREE.Vector3(4.5,3.1,3),new THREE.Vector3(4.5,3.1,-6.3),new THREE.Vector3(-5.8,3.1,-6.3),new THREE.Vector3(-5.8,1.05,-6.3)];
+for(let i=0;i<pp.length-1;i++)posPath.add(new THREE.LineCurve3(pp[i],pp[i+1]));
+const posLine=new THREE.Mesh(new THREE.TubeGeometry(posPath,48,0.025,5,false),M(0xa5620b));scene.add(posLine);
+posLine.userData.info={id:'pos',title:'POS network (separate)',body:'<p>The register\'s own cable goes to the router on the POS maker\'s network, never to the camera switch. POS events reach the AI box through the vendor\'s cloud API, pulled by a connector on the box.</p>'};pick.push(posLine);
+/* phone */
+const phone=new THREE.Group();phone.position.set(1,2.2,8.6);scene.add(phone);
+const ph=new THREE.Mesh(new THREE.BoxGeometry(0.8,1.5,0.08),M(0x111111));phone.add(ph);
+const scr=new THREE.Mesh(new THREE.PlaneGeometry(0.68,1.3),new THREE.MeshBasicMaterial({color:0x13201d}));scr.position.z=0.045;phone.add(scr);
+ph.userData.info={id:'phone',title:"Manager's phone or tablet",body:'<p>Opens the dashboard at <code>http://&lt;AI box&gt;:8080</code> on the office network, or gets a push through a webhook once a rule\'s alerts are switched on. Shows the alert, the clip (link valid 5 minutes, every view logged) and the buttons OK / coach / investigate.</p>'};pick.push(ph);
+addLabel("Manager's phone",[1,3.15,8.6],'',null,'phone');
+addLabel('Closet: switch, AI box, UPS',[RACK[0]+0.4,0.2,RACK[2]+0.6],'',null,'rack');
+addLabel('Register 1',[4.5,1.6,3],'',null,'pos');
+/* labels */
+function addLabel(text,pos,cls,group,key){const el=document.createElement('div');el.className='lbl '+(cls||'');el.textContent=text;labelsEl.appendChild(el);const L={el,p:new THREE.Vector3(...pos),group,key};labels.push(L);el.onclick=()=>{const m=pick.find(m=>m.userData.info&&m.userData.info.id===key);if(m)inspect(m.userData.info)};return L}
+/* people */
+function person(color,apron){const g=new THREE.Group();g.scale.setScalar(1.45);const b=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.24,1.1,12),M(color));b.position.y=0.55;g.add(b);if(apron){const a=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.6,0.05),M(0x1d8a5b));a.position.set(0,0.5,0.22);g.add(a)}const h=new THREE.Mesh(new THREE.SphereGeometry(0.17,12,10),M(0xe0b391));h.position.y=1.3;g.add(h);g.visible=false;scene.add(g);return g}
+const people=[];
+function actor(color,apron,path){const g=person(color,apron);people.push({g,path});return g}
+function place(a,t){const p=a.path;if(t<p[0][0]||t>p[p.length-1][0]+0.001){a.g.visible=false;return}a.g.visible=true;let i=0;while(i<p.length-2&&t>p[i+1][0])i++;const A=p[i],B=p[i+1]||A;const k=B[0]>A[0]?Math.min(1,(t-A[0])/(B[0]-A[0])):0;const x=A[1]+(B[1]-A[1])*k,z=A[2]+(B[2]-A[2])*k;a.g.position.set(x,0,z);const lie=(A[3]==='lie'&&B[3]==='lie')||(k>0.5?B[3]==='lie':A[3]==='lie');a.g.rotation.z=lie?Math.PI/2:0;a.g.position.y=lie?0.25:0}
+/* ---------------- scenarios ---------------- */
+let night=false,smart=false,simT=-1,scenario=null,clockBase='14:00',flash={};
+const SCEN=[
+ {id:'rush',t:'Lunch rush',s:'Line grows past 5 people',clock:'12:30',dur:16,people:()=>{for(let i=0;i<6;i++)actor(0xff8a65,false,[[i*1.1,-5,8],[i*1.1+1.6,-5,4.5],[i*1.1+3,3.6+(i%2)*1.6,4.6+Math.floor(i/2)*0.75],[16,3.6+(i%2)*1.6,4.6+Math.floor(i/2)*0.75]]);actor(0xffffff,true,[[0,4.5,1.9],[16,4.5,1.9]])},
+  log:[[1.6,'Camera','cam-entrance sees a person cross the door line.','cam-entrance'],[2,'Worker','Track t3 crosses count_line → traffic +1 entry (15-min bucket).'],[6.5,'Worker','cam-counter: 5 people with feet inside the queue zone.','cam-counter'],[8,'Core','long_queue candidate opened; must persist 60 s (shown compressed).'],[11,'Core','Incident long_queue in counter-queue. Status ALERTED (alerts enabled for this rule).'],[12,'Alert','Phone: "5 or more people waiting at the counter for 60 s".','phone'],[14,'Manager','Shift lead opens a second register and taps Acknowledge.']]},
+ {id:'refund',t:'Refund, nobody at the counter',s:'POS event meets an empty counter',clock:'15:05',dur:14,people:()=>{actor(0xffffff,true,[[0,4.5,1.9],[14,4.5,1.9]]);actor(0xff8a65,false,[[0,4.5,6.5],[2,-4,7.5],[3,-5,8.5]])},
+  log:[[1,'Camera','cam-counter streams at 15 fps; worker sees one person behind the counter (staff).','cam-counter'],[3.5,'POS','Register 1: REFUND $42.10, ticket T-1042, employee E-17.','pos'],[5,'Core','POS event received. Check customer_side zone from 20 s before to 5 s after.'],[7.5,'Core','Nobody seen at the customer side → pos_refund_no_customer.'],[8.5,'Core','Clip 10 s before to 20 s after cut from the 2-minute buffer, encrypted AES-256-GCM.','cam-counter'],[10,'Alert','Manager: "Refund $42.10 on Register 1 with nobody at the counter" + clip.','phone'],[12.5,'Manager','Watches clip, checks ticket T-1042 in the POS journal, marks Investigate.']]},
+ {id:'night',t:'After-hours intruder',s:'Back door at 02:14',clock:'02:14',night:true,dur:15,people:()=>{actor(0xd7263d,false,[[0,11.5,-2],[2,9.2,-2],[5,8.8,-3.6],[8,4,-2.2],[10,-2,-1],[12,-5.6,-2.6],[13.5,-8.6,-5],[15,-8.6,-5]])},
+  log:[[2.2,'Camera','cam-back: person at the back door. Restaurant closed, outside the staff window.','cam-back'],[4.5,'Core','after_hours_intrusion confirmed after 2 s in view. Status ALERTED.'],[5.2,'Alert','Phone: "Person on camera after hours: Back of house".','phone'],[6,'Log','Access log: person (not staff) at back-door, after_hours = true.'],[12.5,'Camera','cam-office: same person near the safe; merged into the same incident.','cam-office'],[14,'Manager','Owner watches the live clip and calls the police from the phone.']]},
+ {id:'fall',t:'Slip and fall',s:'Customer down in the dining room',clock:'13:20',dur:12,people:()=>{actor(0xff8a65,false,[[0,-5,6.5],[2.5,-4.5,3],[3,-4.5,3,'lie'],[12,-4.5,3,'lie']]);actor(0xffffff,true,[[0,1,5],[7,1,5],[9,-3.6,3.2],[12,-3.6,3.2]])},
+  log:[[3.2,'Camera','cam-dining: a person\'s box turns wide and low on the dining floor.','cam-dining'],[6.4,'Core','Lying-down shape held 3 s inside a floor zone → person_down.'],[7,'Core','Rule still in SHADOW during the pilot: owner sees it, nobody paged.'],[8,'Alert','Owner dashboard: possible fall, dining floor, clip attached.','phone'],[10,'Manager','Staff helps; manager keeps the clip on legal hold for the insurer.']]},
+ {id:'tamper',t:'Camera covered',s:'Kitchen camera blocked',clock:'16:40',dur:10,people:()=>{actor(0xffffff,true,[[0,5,-3.8],[10,5,-3.8]])},
+  log:[[1,'Camera','cam-kitchen picture goes uniform: lens covered.','cam-kitchen'],[2,'Worker','Quality check: obstructed. Frame marked degraded; detection paused on it.'],[3,'Core','Camera state VIDEO_DEGRADED; dashboard tile goes amber (never green).'],[7,'Core','30 s degraded → camera_tamper incident.'],[8,'Alert','Phone: "Kitchen line camera: video unusable (obstructed)".','phone']],tamper:'cam-kitchen'},
+ {id:'cooler',t:'Cooler visit',s:'Cook fetches stock, no alert',clock:'14:40',dur:11,people:()=>{actor(0xffffff,true,[[0,4,-3.8],[3,8.6,-3.6],[4,8.8,-4.2],[8,8.8,-4.2],[10,5,-3.8],[11,5,-3.8]])},
+  log:[[3,'Camera','cam-back and cam-kitchen see a person at the cooler door.','cam-back'],[3.5,'Worker','Track is on a staff-only camera → role staff.'],[9,'Log','Access log: staff, walk-in-cooler, 14:40:03–14:40:08. No incident, no alert.'],[10.5,'Manager','Weekly access log shows cooler visits by hour, including after hours.']]}
+];
+$('scen').innerHTML=SCEN.map(s=>`<button data-s="${s.id}">${esc(s.t)}<small>${esc(s.s)}</small></button>`).join('');
+document.querySelectorAll('#scen button').forEach(b=>b.onclick=()=>run(b.dataset.s));
+function run(id){
+  people.splice(0).forEach(p=>scene.remove(p.g));
+  scenario=SCEN.find(s=>s.id===id);scenario.people();simT=0;logged=0;
+  $('log').innerHTML='';setNight(!!scenario.night);
+  document.querySelectorAll('#scen button').forEach(b=>b.classList.toggle('run',b.dataset.s===id));
+  $('note').textContent=scenario.t+': '+scenario.s+'. Time compressed.';
+  Object.values(camObjs).forEach(o=>o.cone.material.color.set(0x2f6fdb));
+  showTab('sim');
+}
+let logged=0;
+function tickScenario(dt){
+  if(!scenario||simT<0)return;
+  simT+=dt;people.forEach(a=>place(a,simT));
+  const [h,m]=scenario.clock.split(':').map(Number);const mins=h*60+m+Math.floor(simT/4);
+  $('clock').textContent=String(Math.floor(mins/60)%24).padStart(2,'0')+':'+String(mins%60).padStart(2,'0')+(scenario.night?' · closed':' · open');
+  if(scenario.tamper&&simT>1){camObjs[scenario.tamper].cone.material.color.set(0x8a8a8a)}
+  while(logged<scenario.log.length&&simT>=scenario.log[logged][0]){
+    const [,tag,text,focus]=scenario.log[logged];
+    const li=document.createElement('li');li.innerHTML=`<span class="tag ${tag}">${tag}</span><span></span>`;li.lastChild.textContent=text;$('log').appendChild(li);
+    if(focus&&cables[focus])flash[focus]=2.5;
+    if(focus==='pos')flash.pos=2.5;
+    if(tag==='Alert')flash.phone=3;
+    logged++;
+  }
+  if(simT>scenario.dur+2){simT=-1}
+}
+/* ---------------- toggles ---------------- */
+function tog(id,fn){const b=$(id);b.onclick=()=>{const v=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',v);fn(v)}}
+tog('tCones',v=>coneGroup.visible=v);
+tog('tZones',v=>{zoneGroup.visible=v;labels.forEach(L=>{if(L.group===zoneGroup)L.el.hidden=!v})});
+tog('tCables',v=>{cableGroup.visible=v;posLine.visible=v});
+tog('tNight',v=>setNight(v));
+tog('tSmart',v=>{setSmart(v);build=v?'hybrid':'budget';renderBom()});
+function setNight(v){night=v;$('tNight').setAttribute('aria-pressed',v);hemi.intensity=v?0.28:0.9;sun.intensity=v?0.12:0.7;scene.background=new THREE.Color(v?0x101a22:0xdfe7e4)}
+function setSmart(v){smart=v;$('tSmart').setAttribute('aria-pressed',v);Object.values(camObjs).forEach(o=>o.chip.visible=v&&(build==='smart'||o.c.smart))}
+window.setSmart=setSmart;
+setNight(false);
+/* ---------------- inspect ---------------- */
+function inspect(info){$('pane-inspect').innerHTML=`<h3>${esc(info.title)}</h3>${info.body}`;document.querySelectorAll('#pane-inspect [data-len]').forEach(s=>{const c=cables[s.dataset.len];if(c)s.textContent=Math.round(c.len+3)});showTab('inspect')}
+const ray=new THREE.Raycaster(),mouse=new THREE.Vector2();let down=null;
+renderer.domElement.addEventListener('pointerdown',e=>down=[e.clientX,e.clientY]);
+renderer.domElement.addEventListener('pointerup',e=>{if(!down||Math.hypot(e.clientX-down[0],e.clientY-down[1])>5)return;const r=renderer.domElement.getBoundingClientRect();mouse.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(mouse,cam);const hit=ray.intersectObjects(pick.filter(m=>m.visible&&(m.parent.visible!==false)),false)[0];if(hit)inspect(hit.object.userData.info)});
+/* ---------------- tour ---------------- */
+let step=0,fly=null;
+function renderStep(){const s=STEPS[step];$('pane-tour').innerHTML=`<h3>${esc(s.t)}</h3>${s.b}<div class="stepnav"><button class="btn" id="prev" ${step===0?'disabled':''}>Back</button><span class="dots">${STEPS.map((_,i)=>`<i class="${i===step?'on':''}"></i>`).join('')}</span><button class="btn pri" id="next">${step===STEPS.length-1?'Run a scenario':'Next'}</button></div>`;$('prev').onclick=()=>{step=Math.max(0,step-1);renderStep()};$('next').onclick=()=>{if(step===STEPS.length-1){run('refund');return}step++;renderStep()};fly={from:cam.position.clone(),to:new THREE.Vector3(...s.v),tf:ctl.target.clone(),tt:new THREE.Vector3(...s.c),k:0};labels.forEach(L=>L.el.classList.toggle('dim',s.hi.length>0&&!s.hi.includes(L.key)&&!(s.hi.includes('cables')&&CAMS.some(c=>c.id===L.key))&&L.group!==zoneGroup))}
+renderStep();
+/* ---------------- loop ---------------- */
+const v3=new THREE.Vector3();let last=performance.now(),spawn=0;
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}
+const ro=new ResizeObserver(resize);ro.observe(stage);resize();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000);last=now;
+  if(fly){fly.k=Math.min(1,fly.k+dt*1.2);const e=1-Math.pow(1-fly.k,3);cam.position.lerpVectors(fly.from,fly.to,e);ctl.target.lerpVectors(fly.tf,fly.tt,e);if(fly.k>=1)fly=null}
+  ctl.update();tickScenario(dt);
+  /* packets */
+  spawn-=dt;
+  if(!reduce&&cableGroup.visible&&spawn<=0){spawn=0.16;CAMS.forEach(c=>{if(camObjs[c.id].cone.material.color.getHex()===0x8a8a8a)return;const f=flash[c.id]>0;if(Math.random()<(f?0.9:0.18)){const meta=smart&&camObjs[c.id].chip.visible;const m=new THREE.Mesh(pktGeo,meta?pktMeta:pktMat);m.scale.setScalar(meta?0.6:1);scene.add(m);packets.push({m,path:cables[c.id].path,u:0,sp:(f?0.5:0.3)*(8/cables[c.id].len)})}});
+    if(flash.pos>0&&posLine.visible){const m=new THREE.Mesh(pktGeo,new THREE.MeshBasicMaterial({color:0xffa94d}));scene.add(m);packets.push({m,path:posPath,u:0,sp:0.6*(8/posPath.getLength())})}}
+  for(let i=packets.length-1;i>=0;i--){const p=packets[i];p.u+=p.sp*dt;if(p.u>=1){scene.remove(p.m);packets.splice(i,1);continue}p.path.getPointAt(p.u,p.m.position)}
+  for(const k in flash){flash[k]-=dt}
+  scr.material.color.set(flash.phone>0?(Math.floor(now/250)%2?0xff6f59:0xffffff):0x13201d);
+  /* labels */
+  const w=stage.clientWidth,h=stage.clientHeight;
+  labels.forEach(L=>{if(L.el.hidden)return;v3.copy(L.p).project(cam);const vis=v3.z<1&&Math.abs(v3.x)<1.1&&Math.abs(v3.y)<1.1;L.el.style.display=vis?'':'none';if(vis)L.el.style.transform=`translate(${(v3.x+1)/2*w}px,${(1-v3.y)/2*h}px) translate(-50%,${L.group?'-50%':'-120%'})`;L.el.classList.toggle('alert',(L.key==='phone'&&flash.phone>0)||(flash[L.key]>0&&L.key!=='phone'))});
+  renderer.render(scene,cam);requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+}
+}
+</script>

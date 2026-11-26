@@ -144,6 +144,7 @@ tests/fixtures/            MOCK observation and POS streams for replay
 ## Documentation
 | Doc | Purpose |
 |---|---|
+| [3D install simulator](docs/simulation/restaurant-3d.html) | Interactive 3D restaurant: cameras to buy and where, Cat6/PoE wiring, data path, costed builds (open the file in a browser) |
 | [PRODUCT_REQUIREMENTS](docs/PRODUCT_REQUIREMENTS.md) | Personas, stories, the 60-check playbook mapped to status, reports, dashboard |
 | [SYSTEM_ARCHITECTURE](docs/SYSTEM_ARCHITECTURE.md) | Services, data flow, POS path, failure handling, network, camera placement |
 | [AI_MODEL_STRATEGY](docs/AI_MODEL_STRATEGY.md) | Event taxonomy, rule logic and thresholds, failure modes, model roadmap |
