@@ -2,6 +2,10 @@
 
   zeoatap-vision --config cameras.json --observations obs.jsonl --detector none
   ZEOATAP_INTERNAL_TOKEN=... zeoatap-vision --config cameras.json --sink core --detector person
+
+Cameras with "kind": "oak" (Luxonis OAK PoE) detect people on the camera
+itself and need the "oak" extra (uv sync --extra oak); --detector only applies
+to the RTSP cameras.
 """
 
 from __future__ import annotations
@@ -92,7 +96,21 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         logging.warning("$%s not set: POST /v1/clips is disabled", TOKEN_ENV)
 
-    worker = VisionWorker(cfg, detector, sink)
+    oak_source = None
+    oak_cams = [c for c in cfg.cameras if c.kind == "oak"]
+    if oak_cams:
+        from .oak import BlobMismatch, DepthAISource, verify_blob
+        try:
+            oak_source = DepthAISource()
+            for c in oak_cams:  # fail now, not in a camera thread's retry loop
+                verify_blob(c.oak)
+        except (ImportError, FileNotFoundError, BlobMismatch) as e:
+            logging.error("OAK cameras cannot start: %s", e)
+            return 2
+        logging.warning("%d OAK camera(s): on-camera person detection (%s), UNVALIDATED on restaurant CCTV",
+                        len(oak_cams), ", ".join(sorted({c.oak.model for c in oak_cams})))
+
+    worker = VisionWorker(cfg, detector, sink, oak_source=oak_source)
     srv = serve_health(worker, args.health_host, args.health_port, token=token, clip_dir=args.clip_dir)
 
     done = threading.Event()

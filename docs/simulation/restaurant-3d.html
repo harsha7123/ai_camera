@@ -158,9 +158,9 @@ tfoot td{font-weight:700;border-bottom:0}
     <div>
       <h2>Our recommendation</h2>
       <p><b>Start with the budget build.</b> Ordinary RTSP cameras at about $55 each plus one Jetson Orin Nano Super box ($249) running this repo gives the full feature set for about $1,000. That is less than two smart cameras.</p>
-      <p><b>Add smart cameras where they earn it.</b> Put a Luxonis OAK-1 PoE over the register and the back door (Hybrid build). Its own chip finds people at full frame rate and sends only small metadata, which keeps working even if the box is busy.</p>
+      <p><b>Add smart cameras where they earn it.</b> Put a Luxonis OAK-1 PoE over the register and the back door (Hybrid build). Its own chip finds people, so the AI box decodes no video and runs no neural network for that camera; the H.264 video still streams for evidence clips. The adapter is in the repo (<code>"kind": "oak"</code>).</p>
       <p><b>Avoid</b> cameras from makers barred from new US authorisations (Hikvision, Dahua and their rebrands) if you are in the US, and any camera that will not give an RTSP stream.</p>
-      <div class="warn">Honest status: the repo reads RTSP streams today. Running on a Jetson is expected to work (Linux, ARM64, ONNX Runtime GPU build) but has not been tested yet. The OAK and Raspberry Pi AI Camera paths need a small detector adapter in <code>services/vision-worker</code> that is not built yet.</div>
+      <div class="warn">Honest status: the repo reads RTSP streams today. Running on a Jetson is expected to work (Linux, ARM64, ONNX Runtime GPU build) but has not been tested yet. The OAK-1 PoE adapter is built (<code>"kind": "oak"</code> in the camera config) and tested with a simulated camera, but not yet on a physical OAK. The Raspberry Pi AI Camera path is not built.</div>
     </div>
   </div>
 </section>
@@ -281,8 +281,8 @@ const ITEMS={
 };
 const BUILDS={
  budget:{label:'Budget (recommended)',lines:[['reo510',2],['reo520',4],['jetson',1],['nvme',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'Six ordinary RTSP cameras, one Jetson box running this repo. Lowest cost; all AI runs on the box.'},
- hybrid:{label:'Hybrid (smart where it counts)',lines:[['reo510',1],['reo520',3],['oak',2],['jetson',1],['nvme',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'OAK-1 PoE smart cameras over the register and the back door; the Jetson handles the other four. Needs the OAK detector adapter (not built yet).'},
- smart:{label:'All smart cameras',lines:[['oak',6],['pi5',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'Every camera runs detection on its own chip, so the host only needs to run core, the database and the dashboard. Most expensive; needs the OAK adapter.'}
+ hybrid:{label:'Hybrid (smart where it counts)',lines:[['reo510',1],['reo520',3],['oak',2],['jetson',1],['nvme',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'OAK-1 PoE smart cameras over the register and the back door; the Jetson handles the other four. Uses the OAK adapter in the repo (tested with a simulated camera, not yet on hardware).'},
+ smart:{label:'All smart cameras',lines:[['oak',6],['pi5',1],['sw',1],['usb',1],['cat6',1],['tools',1],['mount',1],['ups',1],['sign',1]],note:'Every camera runs detection on its own chip, so the host only needs to run core, the database and the dashboard. Most expensive; uses the OAK adapter (not yet tested on hardware).'}
 };
 const SMART=[
  ['Luxonis OAK-1 PoE','$379','Yes: open-source DepthAI, load your own detector onto the camera\'s Myriad X chip','PoE, IP67, 12 MP. Best "install our code" camera at a sane price','yes'],

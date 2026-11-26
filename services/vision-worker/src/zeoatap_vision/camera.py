@@ -62,6 +62,12 @@ class SampledFrame:
     gray: object  # numpy uint8 thumbnail
     rgb: object = None  # numpy uint8 HxWx3, ~analysis_width wide; only when a real detector runs
     frame_size: tuple[int, int] | None = None  # (w, h) of the analysed frame (rgb if present, else decoded)
+    # On-camera AI (OAK): the camera already detected and the worker tracked.
+    # tracks None with onboard=True means the camera's network gave no result.
+    onboard: bool = False
+    tracks: list | None = None
+    source: str | None = None
+    model_versions: dict | None = None
 
 
 @dataclass

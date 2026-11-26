@@ -1,0 +1,35 @@
+{
+  "cameras": [
+    {"id": "cam-entrance", "url": "rtsp://192.168.50.11:554/h264Preview_01_main", "credentials_env": "CAM_ENTRANCE_RTSP_CREDS"},
+    {
+      "id": "cam-counter",
+      "kind": "oak",
+      "url": "oak://192.168.50.12",
+      "priority": true,
+      "oak": {
+        "blob": "models/oak/person-detection-retail-0013_openvino_2022.1_6shave.blob",
+        "blob_sha256": "REPLACE_WITH_THE_SHA256_PRINTED_BY_scripts/fetch_oak_model.py_______",
+        "model": "person-detection-retail-0013",
+        "nn_size": [544, 320],
+        "person_labels": [1],
+        "confidence": 0.5,
+        "video_size": [1920, 1080],
+        "fps": 15,
+        "bitrate_kbps": 4000
+      }
+    },
+    {"id": "cam-dining", "url": "rtsp://192.168.50.13:554/h264Preview_01_main", "credentials_env": "CAM_DINING_RTSP_CREDS"},
+    {"id": "cam-kitchen", "url": "rtsp://192.168.50.14:554/h264Preview_01_main", "credentials_env": "CAM_KITCHEN_RTSP_CREDS"},
+    {
+      "id": "cam-back",
+      "kind": "oak",
+      "url": "oak://192.168.50.15",
+      "oak": {
+        "blob": "models/oak/person-detection-retail-0013_openvino_2022.1_6shave.blob",
+        "blob_sha256": "REPLACE_WITH_THE_SHA256_PRINTED_BY_scripts/fetch_oak_model.py_______",
+        "fps": 10
+      }
+    },
+    {"id": "cam-office", "url": "rtsp://192.168.50.16:554/h264Preview_01_main", "credentials_env": "CAM_OFFICE_RTSP_CREDS"}
+  ]
+}

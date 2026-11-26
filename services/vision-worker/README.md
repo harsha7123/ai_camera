@@ -60,6 +60,43 @@ See [`cameras.example.json`](cameras.example.json); the ids match [`services/cor
 | `credentials_env` | name of the environment variable holding `user:password` |
 | `priority` | `true` for register/POS cameras: sampled at `priority_fps` (15) instead of `base_fps` (5). The old name `protected` is still read, with a warning |
 | `base_fps`, `priority_fps`, `ring_seconds`, `ring_max_bytes` | optional tuning |
+| `kind` | `rtsp` (default) or `oak` (Luxonis OAK PoE camera with on-camera AI, below) |
+
+## OAK cameras: person detection on the camera (`"kind": "oak"`)
+
+A Luxonis **OAK-1 PoE** runs the person detector on its own chip (Myriad X). The worker then decodes no video and runs no neural network for that camera; it only tracks the boxes the camera sends. RTSP and OAK cameras mix freely in one config: see [`cameras.hybrid-oak.example.json`](cameras.hybrid-oak.example.json) (register and back door on OAK, the rest RTSP).
+
+```
+OAK-1 PoE ─ one Cat6 (PoE) ─▶ switch ─▶ AI box
+  on the camera:  ColorCamera ─ video ─▶ H.264 encoder ───────────────▶ "h264"  → ring buffer → evidence clips
+                              └ preview 544x320 ─▶ person detector ──▶ "dets"   ┐ paired by frame
+                                                 └▶ 160x90 grey ─────▶ "thumb"  ┘ number
+  on the AI box:  quality check (thumb) + ByteTrack (dets) ─▶ the same anonymous Observation as an RTSP camera
+```
+
+| `oak` field | Meaning |
+|---|---|
+| `url` | `oak://<camera IP or MxID>` (no credentials) |
+| `blob`, `blob_sha256` (required) | the compiled model and its SHA-256. A file with another hash is refused at start-up |
+| `model`, `nn_size`, `person_labels` | default `person-detection-retail-0013` (OpenVINO Open Model Zoo, Apache-2.0), 544×320, label 1 = person. For VOC `mobilenet-ssd` use `[300, 300]` and label `15` |
+| `confidence` | minimum detection score (0.5) |
+| `video_size`, `fps`, `bitrate_kbps`, `keyframe_s` | evidence stream: 1920×1080, 15 fps, 4000 kbps, a keyframe every second |
+
+Set-up:
+1. `uv sync --extra oak` installs DepthAI 2.x (MIT).
+2. `uv run --with blobconverter python scripts/fetch_oak_model.py` downloads the model and prints its SHA-256 and the `oak` block to paste into the config.
+3. Give each camera a static IP on the camera network, or address it by MxID.
+4. `zeoatap-vision --config cameras.json --detector person` (`--detector` applies to the RTSP cameras; use `none` if every camera is an OAK).
+
+Behaviour, all covered by `tests/test_oak.py` with a simulated camera:
+- **Evidence clips:** made from the camera's own H.264 by the same remux code as RTSP clips (no re-encode). The stream is buffered from its first keyframe.
+- **Picture quality:** the same black / obstructed / frozen checks run on the thumbnail.
+- **Slow network:** if the camera's network runs slower than the camera, skipped frames are simply dropped.
+- **Silent network:** if the network stops answering for 1.5 s while video still arrives, observations carry `ai_available: false`, so core shows AI_UNAVAILABLE rather than "nobody there".
+- **Reconnect:** a camera that goes quiet for `read_timeout` (3 s) is reconnected with backoff.
+- **Labelling:** observations carry `source: zeoatap-oak-p1` and `model_versions.detector = <model>@<sha256 prefix>`, plus `on_camera: true`.
+
+Not tested on a physical OAK yet. The DepthAI graph is built and checked offline (`test_depthai_pipeline_builds_offline`), but timestamps, frame rates and the model's real accuracy need a first run on hardware. DepthAI 3.x needs a connected device even to build a pipeline, so this adapter targets 2.x; a 3.x port is a follow-up.
 
 ## Sinks (`--sink`)
 - `jsonl` (default): one observation per line to `--observations` (a path, or `-` for stdout).

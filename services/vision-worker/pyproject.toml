@@ -22,6 +22,11 @@ pose = [
     "onnxruntime>=1.20",
     "rtmlib==0.0.16",
 ]
+# Luxonis OAK PoE cameras (on-camera person detection). DepthAI 2.x builds
+# the camera pipeline offline, so it can be checked without hardware.
+oak = [
+    "depthai>=2.30,<3",
+]
 
 [build-system]
 requires = ["hatchling>=1.25"]

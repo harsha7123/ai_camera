@@ -20,6 +20,8 @@ Weights are not in git (`services/vision-worker/models/` is git-ignored). `scrip
 | `rtmpose-m-body7` (default for `--detector pose`) | optional top-down pose (fills `pose_quality`/`visibility` only), 17 COCO keypoints, 256×192 | Apache-2.0 (open-mmlab/mmpose) | **Body7**: COCO, AI Challenger, CrowdPose, MPII, sub-JHMDB, Halpe, PoseTrack18. Each dataset has its own terms, some non-commercial. | …/onnx_sdk/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip | `f7fbb6c5c11a1bb70f3d445e4ddec5d144ea89ad5649c081ef976f9b24a0b741` | `5c0a4bf67953e6d2ac43ce15e77dc9d5d354ae18430a47d2c5963a7bc5683e3c` |
 | `rtmpose-s-body7` | top-down pose, 256×192 (faster) | Apache-2.0 | Body7 (as above) | …/onnx_sdk/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.zip | `7673922e531014906ca4f0f239b7e233b740146a10b632deaa2a28d45470d802` | `9aeb635b83f86aea45cf45d85798f7eba1a162de8e0d721c44e54fe5eebaf47d` |
 
+| `person-detection-retail-0013` (OAK cameras, `"kind": "oak"`) | person detector **on the camera** (Myriad X), 544×320, SSD | Apache-2.0 (OpenVINO Open Model Zoo) | Intel's own training set (not published); weights under the Open Model Zoo's Apache-2.0 license | compiled `.blob` via Luxonis blobconverter (`scripts/fetch_oak_model.py`) | n/a | pinned per site: `blob_sha256` in the camera config (the worker refuses any other file) |
+
 ## Test media
 
 | File | Content | License | Source | sha256 |
@@ -38,6 +40,8 @@ No footage of any kind, and no restaurant imagery, is used in tests.
 | numpy | 2.x | BSD-3-Clause | https://numpy.org |
 | av (PyAV) | 15.x | BSD-3-Clause. The wheels bundle FFmpeg (LGPL/GPL build options need a check). | https://github.com/PyAV-Org/PyAV |
 | protobuf, flatbuffers, tqdm | locked | BSD-3 / Apache-2.0 / MPL-2.0+MIT | transitive (onnxruntime, rtmlib) |
+| depthai (extra `oak`) | 2.34.0.0 | MIT | https://github.com/luxonis/depthai-python (OAK cameras) |
+| blobconverter (setup script only, not installed) | latest | MIT | https://github.com/luxonis/blobconverter (downloads the compiled OAK model) |
 
 ## Not used
 

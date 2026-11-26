@@ -42,7 +42,7 @@ Everything else in the playbook (fire/smoke, weapons, PPE, hand-washing, dine-an
 |---|---|
 | Event engine: track, zone, health and POS rules; staff inference; business hours; traffic counting; access log; dedup and merge; idempotent replay | **Implemented and tested** (Go unit tests + a fixture replay test) |
 | Core service: staff API with RBAC (staff, manager, owner, admin), login throttling, live updates (SSE), alerts with retries and escalation, encrypted evidence clips, retention and legal hold, hash-chained audit log, POS ingest, Postgres | **Implemented and tested** against Postgres (`go test -race`), including end-to-end ingest → incident → clip playback. Not load-tested |
-| Vision worker: RTSP ingest, reconnect, quality checks, rolling buffer, clip cutting, YOLOX person detection, tracker | **Implemented and tested** on synthetic RTSP. **No real IP camera tested yet.** CPU is too slow for production (≈2 fps); needs a GPU |
+| Vision worker: RTSP ingest, reconnect, quality checks, rolling buffer, clip cutting, YOLOX person detection, tracker; **OAK PoE cameras with on-camera person detection** (`"kind": "oak"`) | **Implemented and tested** on synthetic RTSP and a simulated OAK camera. **No real IP camera or OAK tested yet.** CPU is too slow for production (≈2 fps); needs a GPU |
 | Staff dashboard (Next.js): overview, exception queue, clips, dispositions, traffic heat map, access log, admin | **Implemented and tested** with Playwright e2e tests against a mock API |
 | Accuracy evaluation harness (event-level, Clopper-Pearson / exact Poisson) | **Implemented and tested.** **Waiting for annotated restaurant footage** |
 | Multi-camera soak test | Run on the pre-pivot pipeline with synthetic cameras ([tools/soak/RESULTS.md](tools/soak/RESULTS.md)) |
@@ -54,7 +54,7 @@ Everything else in the playbook (fire/smoke, weapons, PPE, hand-washing, dine-an
 | Suite | Result |
 |---|---|
 | Go core (`go test -race`, against Postgres 16) | 77 passed, 0 skipped |
-| Vision worker | 63 passed; 9 skipped (live MediaMTX and model smoke tests need local binaries and weights) |
+| Vision worker | 75 passed (incl. 12 OAK adapter tests); 9 skipped (live MediaMTX and model smoke tests need local binaries and weights) |
 | Eval harness | 57 passed |
 | Soak tool | 7 passed |
 | Dashboard | `tsc`, `eslint` and `next build` clean; 35/35 Playwright e2e passed |

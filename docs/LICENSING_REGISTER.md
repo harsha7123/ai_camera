@@ -31,6 +31,9 @@ The 2026-10-31 owner direction to use non-commercial infant models therefore no 
 
 | Component | Type | Code license | Weights / data license | Commercial use | Attribution | Unresolved | Source | Status |
 |---|---|---|---|---|---|---|---|---|
+| DepthAI (depthai-python) | Code | MIT | — | ✅ | license file | — | github.com/luxonis/depthai-python | **In use** (OAK cameras, extra `oak`) |
+| person-detection-retail-0013 | Model (on OAK cameras) | Apache-2.0 (OpenVINO Open Model Zoo) | Intel training data, not published | ✅ per OMZ license | NOTICE | Training-data provenance not published | github.com/openvinotoolkit/open_model_zoo | **In use** (OAK cameras) |
+| blobconverter | Tool (setup only) | MIT | — | ✅ | — | Uses Luxonis's online compile service | github.com/luxonis/blobconverter | Setup script |
 | MMAction2 | Code | Apache-2.0 | Checkpoints trained on Kinetics/NTU etc. | ✅ code; ⚠️ weights | NOTICE + license | Weight provenance | raw.githubusercontent.com/open-mmlab/mmaction2/main/LICENSE | Candidate |
 | MMPose (RTMPose/RTMO) | Code | Apache-2.0 | COCO/AIC/etc.-trained | ✅ code; ⚠️ weights | NOTICE | OQ-L3 | …/open-mmlab/mmpose/main/LICENSE | Candidate |
 | rtmlib | Code | Apache-2.0 | Downloads MMPose ONNX weights | ✅ code | NOTICE | Same as above | …/Tau-J/rtmlib/main/LICENSE | Candidate |

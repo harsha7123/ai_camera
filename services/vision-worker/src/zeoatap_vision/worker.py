@@ -20,6 +20,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from types import SimpleNamespace
+
 from .camera import CameraWorker, NoVideoError, StreamState
 from .config import WorkerConfig, redact
 from .observation import Detector, build_observation, sanitize_tracks
@@ -35,11 +37,22 @@ LOOP_FAIL_LIMIT = 5
 
 
 class VisionWorker:
-    def __init__(self, cfg: WorkerConfig, detector: Detector, sink):
+    def __init__(self, cfg: WorkerConfig, detector: Detector, sink, oak_source=None):
+        """oak_source connects to OAK cameras (kind "oak"); by default the
+        DepthAI implementation, created only if the config has an OAK camera."""
         self.detector = detector
         width = getattr(detector, "frame_width", None) if detector.available else None
         qsize = RGB_QUEUE_SIZE if width else 8
-        self.cameras = {c.id: CameraWorker(c, queue_size=qsize, analysis_width=width) for c in cfg.cameras}
+        self.cameras = {}
+        for c in cfg.cameras:
+            if c.kind == "oak":
+                from .oak import DepthAISource, OakCameraWorker
+                if oak_source is None:
+                    oak_source = DepthAISource()
+                self.cameras[c.id] = OakCameraWorker(c, oak_source, runtime=getattr(oak_source, "runtime", ""))
+            else:
+                self.cameras[c.id] = CameraWorker(c, queue_size=qsize, analysis_width=width)
+        self.has_onboard = any(c.kind == "oak" for c in cfg.cameras)
         self.quality = {c.id: QualityMonitor() for c in cfg.cameras}
         self.sink = sink
         self._stop = threading.Event()
@@ -68,6 +81,8 @@ class VisionWorker:
     def process(self, f) -> dict:
         """Quality check, detection (only on good frames) and the observation."""
         q = self.quality[f.camera_id].update(f.gray, f.wall_ts)
+        if getattr(f, "onboard", False):
+            return self._process_onboard(f, q)
         ai_ok = bool(self.detector.available)
         tracks: list[dict] = []
         if ai_ok and not q.degraded:
@@ -91,6 +106,20 @@ class VisionWorker:
         size = (rgb.shape[1], rgb.shape[0]) if rgb is not None else getattr(f, "frame_size", None)
         return build_observation(f.camera_id, f.wall_ts, q, self.detector, tracks, ai_available=ai_ok,
                                  frame_size=size)
+
+    def _process_onboard(self, f, q) -> dict:
+        """A frame from an OAK camera: detection already ran on the camera.
+        Tracks are dropped on degraded video, exactly like the host path."""
+        ai_ok = f.tracks is not None
+        tracks: list[dict] = []
+        if ai_ok and not q.degraded:
+            tracks = f.tracks
+            self.frames_analyzed_total += 1
+        tracks, bad = sanitize_tracks(tracks)
+        self.invalid_tracks_total += bad
+        info = SimpleNamespace(name=f.source or "oak", model_versions=f.model_versions or {}, available=ai_ok)
+        return build_observation(f.camera_id, f.wall_ts, q, info, tracks, ai_available=ai_ok,
+                                 frame_size=f.frame_size)
 
     @property
     def analysis_healthy(self) -> bool:
@@ -129,7 +158,8 @@ class VisionWorker:
         cams = [c.status() for c in self.cameras.values()]
         st = {
             "detector": self.detector.name,
-            "ai_available": bool(self.detector.available) and self.analysis_healthy,
+            "ai_available": (bool(self.detector.available) or self.has_onboard) and self.analysis_healthy,
+            "onboard_cameras": sorted(cid for cid, c in self.cameras.items() if c.cfg.kind == "oak"),
             "analysis_healthy": self.analysis_healthy,
             "observations_written": self.sink.written,
             "frames_analyzed_total": self.frames_analyzed_total,
